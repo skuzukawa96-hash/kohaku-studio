@@ -1,0 +1,9 @@
+# テキストは自動判定し、リポジトリ内ではLFに正規化する
+* text=auto eol=lf
+
+# バイナリ（誤って正規化しない）
+*.png binary
+*.jpg binary
+*.ico binary
+*.xlsx binary
+*.db binary

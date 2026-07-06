@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kohaku Studio</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header id="header">
+  <span class="logo">🔶 Kohaku Studio</span>
+  <span id="project-name">無題プロジェクト</span>
+  <span class="spacer"></span>
+  <button id="btn-project-load">📂 開く</button>
+  <button id="btn-project-save">💾 保存</button>
+</header>
+
+<div id="layout">
+  <aside id="sidebar">
+    <div class="side-head">
+      <span>データセット</span>
+      <button id="btn-import" class="primary">＋ インポート</button>
+    </div>
+    <ul id="dataset-list"></ul>
+  </aside>
+
+  <main id="main">
+    <nav id="tabs">
+      <button class="tab active" data-tab="data">データ</button>
+      <button class="tab" data-tab="sql">SQL</button>
+      <button class="tab" data-tab="charts">チャート</button>
+      <button class="tab" data-tab="analytics">分析</button>
+      <button class="tab" data-tab="dashboard">ダッシュボード</button>
+    </nav>
+
+    <section id="tab-data" class="pane active">
+      <div id="data-info" class="hint">左のデータセットを選択するか、「＋ インポート」からデータを取り込んでください。</div>
+      <div id="data-table" class="table-wrap"></div>
+    </section>
+
+    <section id="tab-sql" class="pane">
+      <div class="sql-toolbar">
+        <select id="sql-history" title="実行履歴"><option value="">履歴...</option></select>
+        <button id="btn-run-sql" class="primary">▶ 実行 (Ctrl+Enter)</button>
+        <button id="btn-sql-chart">📈 結果からチャート作成</button>
+        <button id="btn-sql-csv">⬇ CSV保存</button>
+      </div>
+      <textarea id="sql-input" spellcheck="false" placeholder="SELECT region, SUM(units) AS total FROM sample_sales GROUP BY region ORDER BY total DESC"></textarea>
+      <div id="sql-msg" class="hint"></div>
+      <div id="sql-table" class="table-wrap"></div>
+    </section>
+
+    <section id="tab-charts" class="pane">
+      <div id="charts-layout">
+        <div id="chart-editor">
+          <h3>チャート設定</h3>
+          <label>名前 <input id="ch-name" placeholder="チャート名"></label>
+          <label>タイプ
+            <select id="ch-type">
+              <option value="bar">棒グラフ</option>
+              <option value="line">折れ線</option>
+              <option value="scatter">散布図</option>
+              <option value="histogram">ヒストグラム</option>
+              <option value="table">テーブル</option>
+            </select>
+          </label>
+          <label>データソース
+            <select id="ch-source-kind">
+              <option value="dataset">データセット</option>
+              <option value="sql">SQLクエリ</option>
+            </select>
+          </label>
+          <label id="ch-dataset-row">データセット <select id="ch-dataset"></select></label>
+          <label id="ch-sql-row" class="hidden">SQL <textarea id="ch-sql" rows="4" spellcheck="false"></textarea></label>
+          <label id="ch-x-row">X列 <select id="ch-x"></select></label>
+          <label id="ch-y-row">Y列 <select id="ch-y"></select></label>
+          <label id="ch-agg-row">集計
+            <select id="ch-agg">
+              <option value="none">なし</option>
+              <option value="sum">合計</option>
+              <option value="avg">平均</option>
+              <option value="count">件数</option>
+              <option value="min">最小</option>
+              <option value="max">最大</option>
+            </select>
+          </label>
+          <label id="ch-bins-row" class="hidden">ビン数 <input id="ch-bins" type="number" value="20" min="2" max="200"></label>
+          <div class="btn-row">
+            <button id="btn-ch-preview" class="primary">プレビュー</button>
+            <button id="btn-ch-save">💾 保存</button>
+            <button id="btn-ch-new">新規</button>
+          </div>
+          <h3>保存済みチャート</h3>
+          <ul id="chart-list"></ul>
+        </div>
+        <div id="chart-view">
+          <h3 id="chart-title"></h3>
+          <canvas id="chart-canvas"></canvas>
+          <div id="chart-table" class="table-wrap hidden"></div>
+          <div id="chart-msg" class="hint"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-analytics" class="pane">
+      <div class="an-source">
+        <label>データソース
+          <select id="an-source-kind">
+            <option value="dataset">データセット</option>
+            <option value="sql">SQLクエリ</option>
+          </select>
+        </label>
+        <select id="an-dataset"></select>
+        <textarea id="an-sql" rows="2" class="hidden" spellcheck="false" placeholder="SELECT ..."></textarea>
+        <span id="an-cols-msg" class="hint"></span>
+      </div>
+      <nav class="subtabs">
+        <button class="subtab active" data-sub="an-profile">📋 データプロファイル</button>
+        <button class="subtab" data-sub="an-reg">📉 回帰分析</button>
+        <button class="subtab" data-sub="an-clu">🧩 クラスタリング</button>
+      </nav>
+
+      <div id="an-profile" class="subpane active">
+        <div class="btn-row">
+          <button id="btn-an-profile" class="primary">▶ 自動プロファイル実行</button>
+          <span class="hint">全列の統計量・相関行列・強い相関のペアを自動算出します</span>
+        </div>
+        <div id="an-profile-out" class="an-out"></div>
+      </div>
+
+      <div id="an-reg" class="subpane">
+        <div class="an-controls">
+          <label>目的変数 Y <select id="reg-y"></select></label>
+          <div class="an-check-col">説明変数 X <div id="reg-x" class="checklist"></div></div>
+          <button id="btn-an-reg" class="primary">▶ 回帰実行</button>
+        </div>
+        <div id="reg-out" class="an-out"></div>
+        <canvas id="reg-canvas" class="an-canvas hidden"></canvas>
+      </div>
+
+      <div id="an-clu" class="subpane">
+        <div class="an-controls">
+          <div class="an-check-col">特徴量 <div id="clu-x" class="checklist"></div></div>
+          <label>クラスタ数 k <input id="clu-k" type="number" value="3" min="2" max="50"></label>
+          <button id="btn-an-clu" class="primary">▶ クラスタリング実行</button>
+        </div>
+        <div id="clu-out" class="an-out"></div>
+        <div class="an-controls hidden" id="clu-axes-row">
+          <label>X軸 <select id="clu-ax"></select></label>
+          <label>Y軸 <select id="clu-ay"></select></label>
+          <label>結果をデータセット保存 <input id="clu-save-name" placeholder="例: sales_clustered"></label>
+          <button id="btn-clu-save">💾 保存</button>
+        </div>
+        <canvas id="clu-canvas" class="an-canvas hidden"></canvas>
+      </div>
+    </section>
+
+    <section id="tab-dashboard" class="pane">
+      <div class="sql-toolbar">
+        <button id="btn-dash-refresh" class="primary">🔄 更新</button>
+        <span class="hint">保存済みチャートを一覧表示します</span>
+      </div>
+      <div id="dash-grid"></div>
+    </section>
+  </main>
+</div>
+
+<footer id="status">準備完了</footer>
+
+<!-- インポートウィザード -->
+<div id="import-modal" class="modal-bg hidden">
+  <div class="modal">
+    <div class="modal-head">
+      <span>データインポート</span>
+      <button class="close" data-close="import-modal">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="browse-bar">
+        <input id="imp-path" placeholder="フォルダパス">
+        <button id="imp-go">移動</button>
+      </div>
+      <div id="imp-browser">
+        <ul id="imp-entries"></ul>
+      </div>
+      <div id="imp-config" class="hidden">
+        <div class="imp-row">
+          <label>シート/テーブル <select id="imp-object"></select></label>
+          <label>ヘッダー行 <input id="imp-header" type="number" value="1" min="0" title="0 = ヘッダーなし"></label>
+          <label id="imp-delim-row">区切り
+            <select id="imp-delim">
+              <option value="">自動</option>
+              <option value=",">カンマ</option>
+              <option value="tab">タブ</option>
+              <option value=";">セミコロン</option>
+              <option value="|">パイプ</option>
+            </select>
+          </label>
+          <label>データセット名 <input id="imp-name"></label>
+        </div>
+        <div id="imp-preview" class="table-wrap"></div>
+        <div class="btn-row">
+          <button id="imp-import" class="primary">取り込み</button>
+          <span id="imp-msg" class="hint"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- プロジェクト保存/読込 -->
+<div id="project-modal" class="modal-bg hidden">
+  <div class="modal small">
+    <div class="modal-head">
+      <span id="prj-title">プロジェクト</span>
+      <button class="close" data-close="project-modal">✕</button>
+    </div>
+    <div class="modal-body">
+      <label>ファイルパス <input id="prj-path" placeholder="C:\...\myproject.kohaku"></label>
+      <div class="btn-row">
+        <button id="prj-ok" class="primary">OK</button>
+      </div>
+      <div id="prj-msg" class="hint"></div>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

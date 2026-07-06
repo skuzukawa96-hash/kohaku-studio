@@ -1,0 +1,18 @@
+# Rust ビルド成果物
+/target/
+**/target/
+
+# 配布物・ビルド済みバイナリ・生成サンプル
+/dist/
+
+# ローカル環境固有のcargo設定(target-dirの絶対パスなど)。
+# 各自の環境に合わせて .cargo/config.toml.example からコピーして作成する。
+/.cargo/config.toml
+
+# エディタ・OS
+*.rs.bk
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

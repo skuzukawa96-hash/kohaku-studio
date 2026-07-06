@@ -1,0 +1,14 @@
+# ローカル環境固有のcargo設定の例。
+# このファイルを `.cargo/config.toml` にコピーして環境に合わせて編集する。
+# （`.cargo/config.toml` 自体は .gitignore で除外されている）
+#
+# 用途: 一部のWindows環境では、ユーザーの「ドキュメント」フォルダ配下に
+#       作られたディレクトリに ReadOnly 属性が自動付与され、autocfg系の
+#       ビルドスクリプトが「output path is not a writable directory」で
+#       失敗することがある。その場合、ビルド出力先(target-dir)を
+#       ドキュメント外(例: LocalAppData)へ逃がすと回避できる。
+#
+# 通常の環境ではこのファイルは不要（デフォルトの ./target が使われる）。
+
+# [build]
+# target-dir = "C:/Users/<YOUR_NAME>/AppData/Local/kohaku-studio/target"
