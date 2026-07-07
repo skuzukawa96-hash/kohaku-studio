@@ -2,6 +2,8 @@
 
 > データを磨き、洞察をかたちに。 — Rust-powered visual analytics.
 
+![Kohaku Studio のダッシュボード（棒・散布図・ヒストグラム）](docs/images/dashboard.jpg)
+
 **Kohaku Studio** は、Rust製の軽量なローカルファーストBIツールです。単一の実行ファイルがローカル
 Webサーバーを起動し、既定のブラウザでUIを開きます。Node / WebView / .NET などの外部ランタイムに
 一切依存せず、低スペックPCでも軽快に動くことを最優先に設計しています。
