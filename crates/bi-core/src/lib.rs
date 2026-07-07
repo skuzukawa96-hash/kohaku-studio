@@ -205,8 +205,12 @@ pub fn parse_text_table(rows: Vec<Vec<String>>, ncols: usize) -> (Vec<DataType>,
                         return Value::Null;
                     }
                     match types[c] {
-                        DataType::Int64 => parse_int(s).map(Value::Int).unwrap_or_else(|| Value::Text(s.to_string())),
-                        DataType::Float64 => parse_float(s).map(Value::Float).unwrap_or_else(|| Value::Text(s.to_string())),
+                        DataType::Int64 => parse_int(s)
+                            .map(Value::Int)
+                            .unwrap_or_else(|| Value::Text(s.to_string())),
+                        DataType::Float64 => parse_float(s)
+                            .map(Value::Float)
+                            .unwrap_or_else(|| Value::Text(s.to_string())),
                         _ => Value::Text(s.to_string()),
                     }
                 })
@@ -228,7 +232,8 @@ fn parse_float(s: &str) -> Option<f64> {
 
 /// 型付き値の表(Excel/DB由来)の列型を統一する。
 /// Int と Float が混在すれば Float64 に昇格、Text が混じれば Utf8。
-pub fn unify_columns(rows: &mut Vec<Vec<Value>>, ncols: usize) -> Vec<DataType> {
+#[allow(clippy::needless_range_loop)] // 行×列を同一インデックスで走査するため
+pub fn unify_columns(rows: &mut [Vec<Value>], ncols: usize) -> Vec<DataType> {
     let mut types = vec![DataType::Null; ncols];
     for row in rows.iter() {
         for c in 0..ncols {
@@ -292,7 +297,10 @@ mod tests {
             vec!["2".to_string(), "".to_string(), "y".to_string()],
         ];
         let (types, parsed) = parse_text_table(rows, 3);
-        assert_eq!(types, vec![DataType::Int64, DataType::Float64, DataType::Utf8]);
+        assert_eq!(
+            types,
+            vec![DataType::Int64, DataType::Float64, DataType::Utf8]
+        );
         assert_eq!(parsed[0][0], Value::Int(1));
         assert_eq!(parsed[1][1], Value::Null);
     }

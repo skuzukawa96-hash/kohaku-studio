@@ -103,6 +103,7 @@ pub struct OlsResult {
 
 /// 最小二乗法による線形回帰(切片あり)。
 /// rows: 各行が説明変数ベクトル(NaNなし前提)、y: 目的変数。
+#[allow(clippy::needless_range_loop)] // 正規方程式の行列演算でインデックスを直接使う
 pub fn ols(rows: &[Vec<f64>], y: &[f64]) -> Result<OlsResult, String> {
     let n = rows.len();
     if n == 0 || n != y.len() {
@@ -113,10 +114,12 @@ pub fn ols(rows: &[Vec<f64>], y: &[f64]) -> Result<OlsResult, String> {
         return Err("説明変数を指定してください".to_string());
     }
     if n <= p {
-        return Err(format!("データ数({n})が説明変数の数({p})に対して不足しています"));
+        return Err(format!(
+            "データ数({n})が説明変数の数({p})に対して不足しています"
+        ));
     }
     let dim = p + 1; // 切片分
-    // 正規方程式 X'X b = X'y を構築
+                     // 正規方程式 X'X b = X'y を構築
     let mut xtx = vec![vec![0.0f64; dim]; dim];
     let mut xty = vec![0.0f64; dim];
     for (row, &yv) in rows.iter().zip(y.iter()) {
@@ -164,7 +167,9 @@ pub fn ols(rows: &[Vec<f64>], y: &[f64]) -> Result<OlsResult, String> {
     let rmse = (ssr / n as f64).sqrt();
     let (stderr, tvalues) = if dof > 0 {
         let sigma2 = ssr / dof as f64;
-        let se: Vec<f64> = (0..dim).map(|i| (sigma2 * inv[i][i]).max(0.0).sqrt()).collect();
+        let se: Vec<f64> = (0..dim)
+            .map(|i| (sigma2 * inv[i][i]).max(0.0).sqrt())
+            .collect();
         let tv: Vec<f64> = coef
             .iter()
             .zip(se.iter())
@@ -187,6 +192,7 @@ pub fn ols(rows: &[Vec<f64>], y: &[f64]) -> Result<OlsResult, String> {
 }
 
 /// ガウス・ジョルダン法による逆行列(部分ピボット)。特異なら None。
+#[allow(clippy::needless_range_loop)] // ガウス・ジョルダン法で行・列を直接インデックスする
 fn invert(a: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
     let n = a.len();
     let mut m: Vec<Vec<f64>> = a
@@ -200,7 +206,8 @@ fn invert(a: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
         .collect();
     for col in 0..n {
         // ピボット選択
-        let pivot = (col..n).max_by(|&i, &j| m[i][col].abs().partial_cmp(&m[j][col].abs()).unwrap())?;
+        let pivot =
+            (col..n).max_by(|&i, &j| m[i][col].abs().partial_cmp(&m[j][col].abs()).unwrap())?;
         if m[pivot][col].abs() < 1e-12 {
             return None;
         }
@@ -317,7 +324,11 @@ pub fn kmeans(rows: &[Vec<f64>], k: usize, seed: u64) -> Result<KMeansResult, St
 
     // クラスタ中心を元スケールへ戻す
     let centroids: Vec<Vec<f64>> = (0..k)
-        .map(|c| (0..dim).map(|d| centroids_flat[c * dim + d] * stds[d] + means[d]).collect())
+        .map(|c| {
+            (0..dim)
+                .map(|d| centroids_flat[c * dim + d] * stds[d] + means[d])
+                .collect()
+        })
         .collect();
     Ok(KMeansResult {
         assignments,
@@ -329,6 +340,7 @@ pub fn kmeans(rows: &[Vec<f64>], k: usize, seed: u64) -> Result<KMeansResult, St
 }
 
 /// Lloyd法1回分(フラット配列版)。(中心 k×dim, 慣性, 反復回数) を返す。
+#[allow(clippy::needless_range_loop)] // フラット配列を i*dim..でスライスするため
 fn kmeans_once(data: &[f64], n: usize, dim: usize, k: usize, seed: u64) -> (Vec<f64>, f64, usize) {
     let mut rng = XorShift64::new(seed);
     let row = |i: usize| &data[i * dim..(i + 1) * dim];
@@ -513,7 +525,10 @@ mod tests {
         let mut rows = Vec::new();
         for i in 0..30 {
             let offset = (i % 3) as f64 * 100.0;
-            rows.push(vec![offset + (i / 3) as f64 * 0.1, offset + (i / 3) as f64 * 0.1]);
+            rows.push(vec![
+                offset + (i / 3) as f64 * 0.1,
+                offset + (i / 3) as f64 * 0.1,
+            ]);
         }
         let r = kmeans(&rows, 3, 42).unwrap();
         assert_eq!(r.sizes.iter().sum::<usize>(), 30);
@@ -526,7 +541,9 @@ mod tests {
 
     #[test]
     fn test_kmeans_deterministic() {
-        let rows: Vec<Vec<f64>> = (0..50).map(|i| vec![(i % 7) as f64, (i % 11) as f64]).collect();
+        let rows: Vec<Vec<f64>> = (0..50)
+            .map(|i| vec![(i % 7) as f64, (i % 11) as f64])
+            .collect();
         let a = kmeans(&rows, 3, 7).unwrap();
         let b = kmeans(&rows, 3, 7).unwrap();
         assert_eq!(a.assignments, b.assignments);

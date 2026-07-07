@@ -143,7 +143,11 @@ fn serial_to_iso(serial: f64) -> String {
         format!("{y:04}-{m:02}-{d:02}")
     } else {
         let (hh, rem) = (secs / 3600, secs % 3600);
-        format!("{y:04}-{m:02}-{d:02} {hh:02}:{:02}:{:02}", rem / 60, rem % 60)
+        format!(
+            "{y:04}-{m:02}-{d:02} {hh:02}:{:02}:{:02}",
+            rem / 60,
+            rem % 60
+        )
     }
 }
 

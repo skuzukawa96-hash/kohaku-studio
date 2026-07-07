@@ -95,51 +95,18 @@ kohaku-studio                            # 起動して ./samples のファイ�
 ## アーキテクチャ
 
 ```
-ブラウザUI (vanilla JS + Canvas)
-    │  JSON API (Command)
-    ▼
-bi-app        … HTTPサーバー(tiny_http) / クエリエンジン(SQLite in-memory) / 分析API
-bi-analytics  … 記述統計 / 相関 / OLS回帰 / k-means++（純Rust・依存なし）
-bi-connectors … CSV / Excel(calamine) / SQLite コネクタ + レジストリ
-bi-core       … TableData / DataType / Connector trait / Project モデル
+ブラウザUI (vanilla JS + Canvas)  ──JSON API──▶  Rust コア
 ```
 
-設計原則:
+| クレート | 責務 |
+| --- | --- |
+| `bi-core` | データモデル・Connector trait・Projectモデル |
+| `bi-connectors` | CSV / Excel(calamine) / SQLite コネクタ |
+| `bi-analytics` | 統計・回帰・クラスタリング（純Rust・依存なし） |
+| `bi-app` | HTTPサーバー・クエリエンジン・分析API・内蔵UI |
 
-- **UIにデータ処理を書かない** — UIはCommandを投げるだけ。処理はすべてRust側
-- **すべての入力はDatasetに正規化** — CSV/Excel/DBを内部表現 `TableData` に統一
-- **可視化はChartSpecとして保存** — 描画処理ではなくグラフ定義（JSON）を保存
-- **状態はProjectに集約** — 作業状態を `.kohaku` プロジェクトファイルにまとめる
-- **ソース固有処理はコネクタ内に閉じ込める** — Excelのシート/セル型/日付シリアルなど
-
-### クレート構成
-
-```
-kohaku-studio/
-  crates/
-    bi-core/        # データモデル・Connector trait・Projectモデル
-    bi-connectors/  # CSV / Excel / SQLite コネクタ
-    bi-analytics/   # 統計・回帰・クラスタリング
-    bi-app/         # HTTPサーバー・クエリエンジン・分析API・内蔵UI
-```
-
----
-
-## 拡張方法
-
-新しいデータソース対応は `bi_core::Connector` trait を実装し、
-`bi-connectors/src/lib.rs` の `ConnectorRegistry::new()` に登録するだけです。
-
-```rust
-pub trait Connector: Send + Sync {
-    fn connector_type(&self) -> &'static str;
-    fn extensions(&self) -> &'static [&'static str];
-    fn list_objects(&self, path: &Path) -> BiResult<Vec<String>>;
-    fn load(&self, path: &Path, object: &str, opts: &ImportOptions) -> BiResult<TableData>;
-}
-```
-
-チャートタイプの追加は `bi-app/ui/app.js` の `buildChartQuery()` と `renderChart()` に分岐を足します。
+データフロー、設計原則、拡張方法（新しいデータソース／チャートの追加）、技術選定の詳細は
+**[docs/architecture.md](docs/architecture.md)** を参照してください。
 
 ---
 
@@ -195,3 +162,16 @@ cargo test
 自動付与され、`autocfg` 系のビルドスクリプトがビルドに失敗することがあります。その場合は
 [`.cargo/config.toml.example`](.cargo/config.toml.example) を参考に `.cargo/config.toml` を作成し、
 `target-dir` をドキュメント外（例: `LocalAppData`）へ逃がしてください。通常の環境では不要です。
+
+---
+
+## ロードマップ
+
+今後の開発計画は [ROADMAP.md](ROADMAP.md) を参照してください。
+
+---
+
+## ライセンス
+
+[MIT](LICENSE-MIT) または [Apache-2.0](LICENSE-APACHE) のデュアルライセンスです。
+いずれかを選択して利用できます。

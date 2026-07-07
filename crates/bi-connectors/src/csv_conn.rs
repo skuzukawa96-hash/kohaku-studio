@@ -105,7 +105,11 @@ fn decode_text(bytes: &[u8]) -> String {
 
 /// 先頭行の出現数から区切り文字を推定。tsv拡張子はタブ優先。
 fn sniff_delimiter(text: &str, path: &Path) -> u8 {
-    if path.extension().map(|e| e.eq_ignore_ascii_case("tsv")).unwrap_or(false) {
+    if path
+        .extension()
+        .map(|e| e.eq_ignore_ascii_case("tsv"))
+        .unwrap_or(false)
+    {
         return b'\t';
     }
     let first = text.lines().next().unwrap_or("");
@@ -139,7 +143,9 @@ mod tests {
     #[test]
     fn test_csv_load() {
         let p = temp_file("t1.csv", "a,b,c\n1,2.5,x\n2,,y\n".as_bytes());
-        let td = CsvConnector.load(&p, "", &ImportOptions::default()).unwrap();
+        let td = CsvConnector
+            .load(&p, "", &ImportOptions::default())
+            .unwrap();
         assert_eq!(td.schema.columns.len(), 3);
         assert_eq!(td.schema.columns[0].data_type, DataType::Int64);
         assert_eq!(td.schema.columns[1].data_type, DataType::Float64);
@@ -152,7 +158,9 @@ mod tests {
         // "名前,値\nテスト,1\n" をShift-JISで
         let (sjis, _, _) = encoding_rs::SHIFT_JIS.encode("名前,値\nテスト,1\n");
         let p = temp_file("t2.csv", &sjis);
-        let td = CsvConnector.load(&p, "", &ImportOptions::default()).unwrap();
+        let td = CsvConnector
+            .load(&p, "", &ImportOptions::default())
+            .unwrap();
         assert_eq!(td.schema.columns[0].name, "名前");
         assert_eq!(td.rows[0][0], Value::Text("テスト".to_string()));
     }

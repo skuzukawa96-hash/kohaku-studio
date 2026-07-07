@@ -2,8 +2,8 @@
 //! UIはCommandを投げるだけで、データ処理はすべてRust側で行う(設計Rule 1)。
 
 use crate::engine::Engine;
-use bi_core::*;
 use bi_connectors::ConnectorRegistry;
+use bi_core::*;
 use serde_json::{json, Value as Json};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -97,7 +97,9 @@ pub fn run(port: u16, open_browser: bool) -> BiResult<()> {
                 };
                 static_resp(&payload.to_string(), "application/json; charset=utf-8")
             }
-            _ => Response::from_string("not found").with_status_code(404).boxed(),
+            _ => Response::from_string("not found")
+                .with_status_code(404)
+                .boxed(),
         };
         let _ = request.respond(response);
     }
@@ -121,7 +123,9 @@ fn api_guard(request: &Request) -> Option<tiny_http::ResponseBox> {
         Some(
             Response::from_string(format!("{{\"ok\":false,\"error\":\"{msg}\"}}"))
                 .with_status_code(code)
-                .with_header(Header::from_bytes("Content-Type", "application/json; charset=utf-8").unwrap())
+                .with_header(
+                    Header::from_bytes("Content-Type", "application/json; charset=utf-8").unwrap(),
+                )
                 .boxed(),
         )
     };
@@ -156,7 +160,10 @@ fn api_guard(request: &Request) -> Option<tiny_http::ResponseBox> {
 }
 
 fn s(v: &Json, key: &str) -> String {
-    v.get(key).and_then(|x| x.as_str()).unwrap_or("").to_string()
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn handle_api(state: &mut AppState, path: &str, req: &Json) -> BiResult<Json> {
@@ -309,20 +316,31 @@ fn api_import(state: &mut AppState, req: &Json) -> BiResult<Json> {
         name: name.clone(),
         path: path_s,
         object,
-        options: ImportOptions { max_rows: None, ..opts },
+        options: ImportOptions {
+            max_rows: None,
+            ..opts
+        },
         row_count,
         schema: Some(td.schema.clone()),
     };
     state.datasets.retain(|d| d.name != name);
     state.datasets.push(def);
-    Ok(json!({"name": name, "rows": row_count, "schema": table_json(&TableData{schema: td.schema, rows: vec![]})["columns"]}))
+    Ok(
+        json!({"name": name, "rows": row_count, "schema": table_json(&TableData{schema: td.schema, rows: vec![]})["columns"]}),
+    )
 }
 
 pub(crate) fn sanitize_dataset_name(name: &str) -> String {
     let cleaned: String = name
         .trim()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' || (c as u32) > 127 { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' || (c as u32) > 127 {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if cleaned.is_empty() {
         "dataset".to_string()
@@ -394,7 +412,8 @@ fn api_project_save(state: &mut AppState, req: &Json) -> BiResult<Json> {
 fn api_project_load(state: &mut AppState, req: &Json) -> BiResult<Json> {
     let path = s(req, "path");
     let text = std::fs::read_to_string(&path).map_err(|e| format!("読み込みに失敗: {e}"))?;
-    let project: Project = serde_json::from_str(&text).map_err(|e| format!("プロジェクト形式が不正: {e}"))?;
+    let project: Project =
+        serde_json::from_str(&text).map_err(|e| format!("プロジェクト形式が不正: {e}"))?;
 
     // 状態をリセットして各データセットを再インポート
     state.engine = Engine::new()?;

@@ -1190,8 +1190,17 @@ function init() {
   $("prj-ok").onclick = projectOk;
   $("prj-path").addEventListener("keydown", (e) => { if (e.key === "Enter") projectOk(); });
 
+  // URLハッシュでタブを開く（例: #sql, #dashboard）。ブックマーク／ディープリンク用。
+  const openHashTab = () => {
+    const h = location.hash.slice(1);
+    if (["data", "sql", "charts", "analytics", "dashboard"].includes(h)) switchTab(h);
+  };
+  window.addEventListener("hashchange", openHashTab);
+
   updateChartFormVisibility();
-  refreshState().catch((e) => setStatus(e.message, true));
+  refreshState()
+    .then(openHashTab)
+    .catch((e) => setStatus(e.message, true));
 }
 
 document.addEventListener("DOMContentLoaded", init);

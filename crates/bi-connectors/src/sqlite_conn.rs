@@ -96,7 +96,9 @@ mod tests {
         }
         let objs = SqliteConnector.list_objects(&p).unwrap();
         assert_eq!(objs, vec!["items"]);
-        let td = SqliteConnector.load(&p, "items", &ImportOptions::default()).unwrap();
+        let td = SqliteConnector
+            .load(&p, "items", &ImportOptions::default())
+            .unwrap();
         assert_eq!(td.rows.len(), 3);
         assert_eq!(td.schema.columns[0].data_type, DataType::Int64);
         assert_eq!(td.rows[0][1], Value::Text("apple".into()));

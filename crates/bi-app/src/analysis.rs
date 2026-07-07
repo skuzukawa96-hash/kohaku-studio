@@ -15,20 +15,30 @@ const MAX_CORR_COLS: usize = 20;
 const DISTINCT_CAP: usize = 10_000;
 
 fn s(v: &Json, key: &str) -> String {
-    v.get(key).and_then(|x| x.as_str()).unwrap_or("").to_string()
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn str_list(v: &Json, key: &str) -> Vec<String> {
     v.get(key)
         .and_then(|x| x.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
 /// source: {kind: "dataset"|"sql", dataset?/sql?} をクエリ結果に解決する
 fn resolve_source(state: &AppState, req: &Json) -> BiResult<QueryResult> {
     let src = req.get("source").ok_or("sourceが指定されていません")?;
-    let kind = src.get("kind").and_then(|x| x.as_str()).unwrap_or("dataset");
+    let kind = src
+        .get("kind")
+        .and_then(|x| x.as_str())
+        .unwrap_or("dataset");
     let sql = if kind == "sql" {
         let q = src
             .get("sql")
@@ -159,7 +169,10 @@ pub fn api_profile(state: &mut AppState, req: &Json) -> BiResult<Json> {
     }
 
     // 相関行列と強相関ペア
-    let corr_names: Vec<&String> = numeric_cols.iter().map(|(i, _)| &result.columns[*i]).collect();
+    let corr_names: Vec<&String> = numeric_cols
+        .iter()
+        .map(|(i, _)| &result.columns[*i])
+        .collect();
     let mut matrix: Vec<Vec<Json>> = Vec::new();
     let mut pairs: Vec<(String, String, f64)> = Vec::new();
     for (i, (_, xi)) in numeric_cols.iter().enumerate() {
@@ -271,10 +284,14 @@ pub fn api_regression(state: &mut AppState, req: &Json) -> BiResult<Json> {
 
 pub fn api_cluster(state: &mut AppState, req: &Json) -> BiResult<Json> {
     let features = str_list(req, "features");
-    if features.len() < 1 {
+    if features.is_empty() {
         return Err("特徴量を1つ以上指定してください".to_string());
     }
-    let k = req.get("k").and_then(|x| x.as_u64()).unwrap_or(3).clamp(2, 50) as usize;
+    let k = req
+        .get("k")
+        .and_then(|x| x.as_u64())
+        .unwrap_or(3)
+        .clamp(2, 50) as usize;
     let save_as = s(req, "save_as");
 
     let result = resolve_source(state, req)?;
@@ -333,7 +350,10 @@ pub fn api_cluster(state: &mut AppState, req: &Json) -> BiResult<Json> {
                 .map(|(name, data_type)| ColumnSchema { name, data_type })
                 .collect(),
         };
-        let td = TableData { schema: schema.clone(), rows: data_rows };
+        let td = TableData {
+            schema: schema.clone(),
+            rows: data_rows,
+        };
         let row_count = td.rows.len();
         state.engine.register(&name, &td)?;
         state.datasets.retain(|d| d.name != name);

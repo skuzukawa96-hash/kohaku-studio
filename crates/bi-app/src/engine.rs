@@ -145,9 +145,18 @@ mod tests {
         TableData {
             schema: TableSchema {
                 columns: vec![
-                    ColumnSchema { name: "id".into(), data_type: DataType::Int64 },
-                    ColumnSchema { name: "grp".into(), data_type: DataType::Utf8 },
-                    ColumnSchema { name: "val".into(), data_type: DataType::Float64 },
+                    ColumnSchema {
+                        name: "id".into(),
+                        data_type: DataType::Int64,
+                    },
+                    ColumnSchema {
+                        name: "grp".into(),
+                        data_type: DataType::Utf8,
+                    },
+                    ColumnSchema {
+                        name: "val".into(),
+                        data_type: DataType::Float64,
+                    },
                 ],
             },
             rows: vec![
@@ -163,7 +172,10 @@ mod tests {
         let mut e = Engine::new().unwrap();
         e.register("t", &sample()).unwrap();
         let r = e
-            .query("SELECT grp, AVG(val) AS m, COUNT(*) AS n FROM t GROUP BY grp ORDER BY grp", 100)
+            .query(
+                "SELECT grp, AVG(val) AS m, COUNT(*) AS n FROM t GROUP BY grp ORDER BY grp",
+                100,
+            )
             .unwrap();
         assert_eq!(r.columns, vec!["grp", "m", "n"]);
         assert_eq!(r.rows.len(), 2);

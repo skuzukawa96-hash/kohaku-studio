@@ -56,7 +56,9 @@ fn make_samples(dir: &str) -> Result<(), String> {
     let products = ["ProductA", "ProductB", "ProductC"];
     let mut seed: u64 = 42;
     let mut rand = || {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (seed >> 33) as f64 / (u32::MAX as f64) * 2.0
     };
     for day in 1..=90 {
