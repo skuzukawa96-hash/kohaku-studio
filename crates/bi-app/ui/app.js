@@ -773,7 +773,174 @@ async function anLoadColumns() {
   };
   mkChecklist($("reg-x"));
   mkChecklist($("clu-x"));
+  renderTestSelects();
   if (!numCols.length) $("an-cols-msg").textContent = "数値列がありません(ソースを選択してください)";
+}
+
+// ---------- 自動検定 (Test Advisor) ----------
+
+function fillSelect(id, items) {
+  const sel = $(id);
+  const cur = sel.value;
+  sel.innerHTML = "";
+  for (const name of items) {
+    const op = document.createElement("option");
+    op.value = name;
+    op.textContent = name;
+    sel.appendChild(op);
+  }
+  const kept = items.includes(cur);
+  if (kept) sel.value = cur;
+  return kept; // false = 既定値にリセットされた
+}
+
+/** p値の表示: 極小値は「<0.0001」 */
+function fmtP(p) {
+  if (p === null || p === undefined || !isFinite(p)) return "—";
+  if (p > 0 && p < 0.0001) return "<0.0001";
+  return fmtNum(p, 4);
+}
+
+function renderTestSelects() {
+  const num = anColumns.filter((c) => c.numeric).map((c) => c.name);
+  const cat = anColumns.filter((c) => !c.numeric).map((c) => c.name);
+  const all = anColumns.map((c) => c.name);
+  fillSelect("tst-target", num);
+  fillSelect("tst-x", num);
+  fillSelect("tst-y", num);
+  // グループ/カテゴリ選択は、ユーザー選択が失われた時のみカテゴリ列を既定にする
+  if (!fillSelect("tst-group", all) && cat.length) $("tst-group").value = cat[0];
+  if (!fillSelect("tst-rowcol", all) && cat.length) $("tst-rowcol").value = cat[0];
+  if (!fillSelect("tst-colcol", all) && cat.length) $("tst-colcol").value = cat[cat.length > 1 ? 1 : 0];
+  // Y列は既定でX列と別の列に
+  if (num.length > 1 && $("tst-y").value === $("tst-x").value) $("tst-y").value = num[1];
+}
+
+function updateTestModeVisibility() {
+  const m = $("tst-mode").value;
+  $("tst-target-row").classList.toggle("hidden", m !== "groups");
+  $("tst-group-row").classList.toggle("hidden", m !== "groups");
+  $("tst-x-row").classList.toggle("hidden", m !== "two_numeric");
+  $("tst-y-row").classList.toggle("hidden", m !== "two_numeric");
+  $("tst-paired-row").classList.toggle("hidden", m !== "two_numeric");
+  $("tst-row-row").classList.toggle("hidden", m !== "categorical");
+  $("tst-col-row").classList.toggle("hidden", m !== "categorical");
+}
+
+function tstBody() {
+  const mode = $("tst-mode").value;
+  const b = {
+    source: anGetSource(),
+    mode,
+    alpha: parseFloat($("tst-alpha").value) || 0.05,
+    correction: $("tst-correction").value,
+  };
+  if (mode === "groups") {
+    b.target = $("tst-target").value;
+    b.group = $("tst-group").value;
+  } else if (mode === "two_numeric") {
+    b.x = $("tst-x").value;
+    b.y = $("tst-y").value;
+    b.paired = $("tst-paired").value === "true";
+  } else {
+    b.row = $("tst-rowcol").value;
+    b.col = $("tst-colcol").value;
+  }
+  return b;
+}
+
+function assumptionTable(items) {
+  if (!items || !items.length) return "";
+  let h = '<h4>前提条件チェック</h4><div class="table-wrap"><table class="grid"><thead><tr><th>項目</th><th>統計量</th><th>p値</th><th>判定</th><th>コメント</th></tr></thead><tbody>';
+  for (const a of items) {
+    const mark = a.passed ? '<span style="color:#58c9a4">OK</span>' : '<span style="color:#e0a15c">要注意</span>';
+    h += `<tr><td>${esc(a.name)}</td><td class="num">${fmtNum(a.statistic, 3)}</td><td class="num">${fmtP(a.p_value)}</td><td>${mark}</td><td>${esc(a.note)}</td></tr>`;
+  }
+  return h + "</tbody></table></div>";
+}
+
+function groupTable(items) {
+  if (!items || !items.length) return "";
+  let h = '<div class="table-wrap"><table class="grid"><thead><tr><th>群</th><th>n</th><th>平均</th><th>標準偏差</th></tr></thead><tbody>';
+  for (const g of items) {
+    h += `<tr><td>${esc(g.label)}</td><td class="num">${g.n}</td><td class="num">${fmtNum(g.mean, 4)}</td><td class="num">${fmtNum(g.sd, 4)}</td></tr>`;
+  }
+  return h + "</tbody></table></div>";
+}
+
+async function tstAdvise() {
+  const out = $("tst-advice");
+  out.innerHTML = '<div class="hint">診断中...</div>';
+  $("tst-run-row").classList.add("hidden");
+  $("tst-result").innerHTML = "";
+  try {
+    const r = await api("/api/analyze/advise", tstBody());
+    let html = `<h4>目的: ${esc(r.intent)}</h4>`;
+    html += `<div class="rec-box"><div>第一候補: <b>${esc(r.primary_label)}</b></div>`;
+    if (r.alternatives.length) html += `<div class="hint">代替候補: ${r.alternatives.map((a) => esc(a.label)).join(" / ")}</div>`;
+    html += "</div>";
+    if (r.reasons.length) html += "<h4>理由</h4><ul>" + r.reasons.map((x) => `<li>${esc(x)}</li>`).join("") + "</ul>";
+    if (r.warnings.length) html += "<h4>注意</h4><ul>" + r.warnings.map((x) => `<li>⚠ ${esc(x)}</li>`).join("") + "</ul>";
+    html += assumptionTable(r.assumptions);
+    html += groupTable(r.group_summaries);
+    out.innerHTML = html;
+    // 実行する検定の候補を用意(第一候補を既定に)
+    const sel = $("tst-choice");
+    sel.innerHTML = "";
+    for (const o of r.available) {
+      const op = document.createElement("option");
+      op.value = o.id;
+      op.textContent = o.label + (o.id === r.primary ? "(推奨)" : "");
+      sel.appendChild(op);
+    }
+    sel.value = r.primary;
+    $("tst-run-row").classList.remove("hidden");
+  } catch (e) {
+    out.innerHTML = `<div class="hint error">${esc(e.message)}</div>`;
+  }
+}
+
+async function tstRun() {
+  const out = $("tst-result");
+  out.innerHTML = '<div class="hint">検定中...</div>';
+  try {
+    const body = tstBody();
+    body.test = $("tst-choice").value;
+    const r = await api("/api/analyze/test", body);
+    const t = r.result;
+    const metrics = [[t.statistic_name, fmtNum(t.statistic, 4)]];
+    if (t.df !== null && t.df !== undefined) metrics.push([t.df2 !== null && t.df2 !== undefined ? "自由度 df1" : "自由度 df", fmtNum(t.df, t.df2 != null ? 0 : 2)]);
+    if (t.df2 !== null && t.df2 !== undefined) metrics.push(["自由度 df2", fmtNum(t.df2, 2)]);
+    metrics.push(["p値", fmtP(t.p_value)]);
+    if (t.effect) metrics.push([t.effect.name + `(${t.effect.magnitude})`, fmtNum(t.effect.value, 3)]);
+    metrics.push(["n", t.n]);
+    let html = `<h4>${esc(t.test)}</h4>`;
+    html += metricHtml(metrics);
+    html += `<div class="hint">帰無仮説: ${esc(t.null_hypothesis)}</div>`;
+    if (t.estimate !== null && t.estimate !== undefined) {
+      let est = `${esc(t.estimate_label || "推定値")}: <b>${fmtNum(t.estimate, 4)}</b>`;
+      if (t.ci) est += ` &nbsp; ${Math.round(t.ci.level * 100)}% 信頼区間 [${fmtNum(t.ci.low, 4)}, ${fmtNum(t.ci.high, 4)}]`;
+      html += `<div class="est-box">${est}</div>`;
+    }
+    const sigColor = t.p_value < (parseFloat($("tst-alpha").value) || 0.05) ? "#58c9a4" : "var(--muted)";
+    html += `<div class="interp" style="border-left:3px solid ${sigColor}">${esc(t.interpretation)}</div>`;
+    if (t.warnings && t.warnings.length) html += "<ul>" + t.warnings.map((x) => `<li>⚠ ${esc(x)}</li>`).join("") + "</ul>";
+    html += groupTable(t.groups);
+    // 事後検定(多重比較)
+    if (r.posthoc && r.posthoc.pairs) {
+      html += `<h4>事後のペアワイズ比較 (${esc(r.posthoc.method)}, 補正: ${esc(r.correction)})</h4>`;
+      html += '<div class="table-wrap"><table class="grid"><thead><tr><th>群A</th><th>群B</th><th>統計量</th><th>効果量</th><th>p (未補正)</th><th>p (補正後)</th><th>有意</th></tr></thead><tbody>';
+      for (const p of r.posthoc.pairs) {
+        const mark = p.significant ? '<span style="color:#58c9a4">✔</span>' : "";
+        html += `<tr><td>${esc(p.a)}</td><td>${esc(p.b)}</td><td class="num">${fmtNum(p.statistic, 3)}</td><td class="num">${fmtNum(p.effect, 3)}</td><td class="num">${fmtP(p.p)}</td><td class="num">${fmtP(p.p_adjusted)}</td><td>${mark}</td></tr>`;
+      }
+      html += "</tbody></table></div>";
+    }
+    html += `<div class="hint" style="margin-top:8px">${esc(r.note)}</div>`;
+    out.innerHTML = html;
+  } catch (e) {
+    out.innerHTML = `<div class="hint error">${esc(e.message)}</div>`;
+  }
 }
 
 function checkedValues(container) {
@@ -1183,6 +1350,17 @@ function init() {
   };
   $("clu-ax").onchange = drawClusterScatter;
   $("clu-ay").onchange = drawClusterScatter;
+
+  // 自動検定
+  $("tst-mode").onchange = () => {
+    updateTestModeVisibility();
+    $("tst-run-row").classList.add("hidden");
+    $("tst-advice").innerHTML = "";
+    $("tst-result").innerHTML = "";
+  };
+  $("btn-tst-advise").onclick = tstAdvise;
+  $("btn-tst-run").onclick = tstRun;
+  updateTestModeVisibility();
 
   $("btn-dash-refresh").onclick = renderDashboard;
   $("btn-project-save").onclick = () => openProjectModal("save");

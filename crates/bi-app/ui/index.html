@@ -118,6 +118,7 @@
         <button class="subtab active" data-sub="an-profile">📋 データプロファイル</button>
         <button class="subtab" data-sub="an-reg">📉 回帰分析</button>
         <button class="subtab" data-sub="an-clu">🧩 クラスタリング</button>
+        <button class="subtab" data-sub="an-test">🧪 自動検定 (Test Advisor)</button>
       </nav>
 
       <div id="an-profile" class="subpane active">
@@ -152,6 +153,46 @@
           <button id="btn-clu-save">💾 保存</button>
         </div>
         <canvas id="clu-canvas" class="an-canvas hidden"></canvas>
+      </div>
+
+      <div id="an-test" class="subpane">
+        <div class="an-controls">
+          <label>分析タイプ
+            <select id="tst-mode">
+              <option value="groups">数値 × グループ列</option>
+              <option value="two_numeric">2つの数値列</option>
+              <option value="categorical">カテゴリ × カテゴリ</option>
+            </select>
+          </label>
+          <label id="tst-target-row">目的変数(数値) <select id="tst-target"></select></label>
+          <label id="tst-group-row">グループ列 <select id="tst-group"></select></label>
+          <label id="tst-x-row" class="hidden">X列(数値) <select id="tst-x"></select></label>
+          <label id="tst-y-row" class="hidden">Y列(数値) <select id="tst-y"></select></label>
+          <label id="tst-paired-row" class="hidden">比較種別
+            <select id="tst-paired">
+              <option value="false">相関を見る</option>
+              <option value="true">対応あり (before/after)</option>
+            </select>
+          </label>
+          <label id="tst-row-row" class="hidden">行カテゴリ <select id="tst-rowcol"></select></label>
+          <label id="tst-col-row" class="hidden">列カテゴリ <select id="tst-colcol"></select></label>
+          <label>有意水準 α <input id="tst-alpha" type="number" value="0.05" min="0.001" max="0.2" step="0.01"></label>
+          <label>多重比較補正
+            <select id="tst-correction">
+              <option value="holm">Holm</option>
+              <option value="bh">Benjamini-Hochberg (FDR)</option>
+              <option value="bonferroni">Bonferroni</option>
+              <option value="none">なし(未補正)</option>
+            </select>
+          </label>
+          <button id="btn-tst-advise" class="primary">🔍 検定候補を提案</button>
+        </div>
+        <div id="tst-advice" class="an-out"></div>
+        <div id="tst-run-row" class="an-controls hidden">
+          <label>実行する検定 <select id="tst-choice"></select></label>
+          <button id="btn-tst-run" class="primary">▶ 検定を実行</button>
+        </div>
+        <div id="tst-result" class="an-out"></div>
       </div>
     </section>
 

@@ -3,9 +3,10 @@
 
 use crate::engine::QueryResult;
 use crate::server::AppState;
+use bi_analytics::htest::{self, Correction};
 use bi_core::*;
 use serde_json::{json, Value as Json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// 分析に読み込む最大行数
 const ANALYZE_LIMIT: usize = 1_000_000;
@@ -384,5 +385,298 @@ pub fn api_cluster(state: &mut AppState, req: &Json) -> BiResult<Json> {
         "dropped": dropped,
         "points": points,
         "saved": saved,
+    }))
+}
+
+// ---------- Kohaku Test Advisor(統計検定) ----------
+
+fn value_label(v: &Value) -> String {
+    match v {
+        Value::Null => "(null)".to_string(),
+        Value::Text(t) => t.clone(),
+        Value::Int(i) => i.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::Bool(b) => b.to_string(),
+    }
+}
+
+/// カテゴリ群の上限(UI・計算コスト保護)
+const MAX_GROUPS: usize = 50;
+
+/// 数値目的変数をカテゴリ列で群分けする(出現順を保持、NaN/NULLは除外)。
+fn build_groups(
+    result: &QueryResult,
+    ti: usize,
+    gi: usize,
+) -> BiResult<Vec<(String, Vec<f64>)>> {
+    let tcol = col_f64(result, ti);
+    let mut order: Vec<String> = vec![];
+    let mut map: HashMap<String, Vec<f64>> = HashMap::new();
+    for (row, &tv) in result.rows.iter().zip(tcol.iter()) {
+        if !tv.is_finite() || matches!(row[gi], Value::Null) {
+            continue;
+        }
+        let label = value_label(&row[gi]);
+        if !map.contains_key(&label) {
+            if order.len() >= MAX_GROUPS {
+                return Err(format!("群が多すぎます(最大{MAX_GROUPS}群)。群列を見直してください。"));
+            }
+            order.push(label.clone());
+        }
+        map.entry(label).or_default().push(tv);
+    }
+    Ok(order
+        .into_iter()
+        .map(|k| {
+            let v = map.remove(&k).unwrap();
+            (k, v)
+        })
+        .collect())
+}
+
+/// 2数値列を対応づけ(両方が有限の行のみ)。
+fn two_numeric_pairs(result: &QueryResult, xi: usize, yi: usize) -> (Vec<f64>, Vec<f64>) {
+    let xc = col_f64(result, xi);
+    let yc = col_f64(result, yi);
+    let mut xs = vec![];
+    let mut ys = vec![];
+    for i in 0..result.rows.len() {
+        if xc[i].is_finite() && yc[i].is_finite() {
+            xs.push(xc[i]);
+            ys.push(yc[i]);
+        }
+    }
+    (xs, ys)
+}
+
+/// 2カテゴリ列のクロス集計(度数表)を作る。
+fn contingency(
+    result: &QueryResult,
+    ri: usize,
+    ci: usize,
+) -> BiResult<(Vec<String>, Vec<String>, Vec<Vec<f64>>)> {
+    let mut rlabels: Vec<String> = vec![];
+    let mut clabels: Vec<String> = vec![];
+    let mut counts: HashMap<(String, String), f64> = HashMap::new();
+    for row in &result.rows {
+        if matches!(row[ri], Value::Null) || matches!(row[ci], Value::Null) {
+            continue;
+        }
+        let rl = value_label(&row[ri]);
+        let cl = value_label(&row[ci]);
+        if !rlabels.contains(&rl) {
+            if rlabels.len() >= MAX_GROUPS {
+                return Err("行カテゴリが多すぎます".to_string());
+            }
+            rlabels.push(rl.clone());
+        }
+        if !clabels.contains(&cl) {
+            if clabels.len() >= MAX_GROUPS {
+                return Err("列カテゴリが多すぎます".to_string());
+            }
+            clabels.push(cl.clone());
+        }
+        *counts.entry((rl, cl)).or_insert(0.0) += 1.0;
+    }
+    let table: Vec<Vec<f64>> = rlabels
+        .iter()
+        .map(|rl| {
+            clabels
+                .iter()
+                .map(|cl| *counts.get(&(rl.clone(), cl.clone())).unwrap_or(&0.0))
+                .collect()
+        })
+        .collect();
+    Ok((rlabels, clabels, table))
+}
+
+fn alpha_of(req: &Json) -> f64 {
+    req.get("alpha")
+        .and_then(|x| x.as_f64())
+        .filter(|a| *a > 0.0 && *a < 0.5)
+        .unwrap_or(0.05)
+}
+
+/// 検定候補の提案 (/api/analyze/advise)
+pub fn api_advise(state: &mut AppState, req: &Json) -> BiResult<Json> {
+    let result = resolve_source(state, req)?;
+    let mode = s(req, "mode");
+    let rec = match mode.as_str() {
+        "groups" => {
+            let ti = col_index(&result, &s(req, "target"))?;
+            let gi = col_index(&result, &s(req, "group"))?;
+            if !is_numeric_col(&result, ti) {
+                return Err("目的変数は数値列を選んでください".to_string());
+            }
+            let groups = build_groups(&result, ti, gi)?;
+            bi_analytics::advisor::advise_numeric_groups(&groups, false)?
+        }
+        "two_numeric" => {
+            let xi = col_index(&result, &s(req, "x"))?;
+            let yi = col_index(&result, &s(req, "y"))?;
+            if !is_numeric_col(&result, xi) || !is_numeric_col(&result, yi) {
+                return Err("2つとも数値列を選んでください".to_string());
+            }
+            let (xs, ys) = two_numeric_pairs(&result, xi, yi);
+            let paired = req.get("paired").and_then(|x| x.as_bool()).unwrap_or(false);
+            if paired {
+                let groups = vec![("測定1".to_string(), xs), ("測定2".to_string(), ys)];
+                bi_analytics::advisor::advise_numeric_groups(&groups, true)?
+            } else {
+                bi_analytics::advisor::advise_two_numeric(&xs, &ys)?
+            }
+        }
+        "categorical" => {
+            let ri = col_index(&result, &s(req, "row"))?;
+            let ci = col_index(&result, &s(req, "col"))?;
+            let (_rl, _cl, table) = contingency(&result, ri, ci)?;
+            bi_analytics::advisor::advise_categorical(&table)?
+        }
+        _ => return Err("mode は groups / two_numeric / categorical のいずれか".to_string()),
+    };
+    serde_json::to_value(&rec).map_err(|e| e.to_string())
+}
+
+/// 単一検定を実行して結果を返す。
+fn run_named_test(
+    id: &str,
+    result: &QueryResult,
+    req: &Json,
+    alpha: f64,
+) -> BiResult<htest::TestResult> {
+    let mode = s(req, "mode");
+    match mode.as_str() {
+        "groups" => {
+            let ti = col_index(result, &s(req, "target"))?;
+            let gi = col_index(result, &s(req, "group"))?;
+            let groups = build_groups(result, ti, gi)?;
+            let gv: Vec<Vec<f64>> = groups.iter().map(|(_, g)| g.clone()).collect();
+            let mut r = match id {
+                "welch_t" if gv.len() == 2 => htest::welch_t(&gv[0], &gv[1], alpha),
+                "student_t" if gv.len() == 2 => htest::student_t(&gv[0], &gv[1], alpha),
+                "mann_whitney" if gv.len() == 2 => htest::mann_whitney(&gv[0], &gv[1], alpha),
+                "anova" => htest::one_way_anova(&gv, alpha),
+                "welch_anova" => htest::welch_anova(&gv, alpha),
+                "kruskal" => htest::kruskal_wallis(&gv, alpha),
+                _ => Err(format!("この群構成では検定「{id}」を実行できません")),
+            }?;
+            // 汎用ラベル(群1,群2,...)を実際のカテゴリ名に置き換える
+            for (gs, (label, _)) in r.groups.iter_mut().zip(groups.iter()) {
+                gs.label = label.clone();
+            }
+            Ok(r)
+        }
+        "two_numeric" => {
+            let xi = col_index(result, &s(req, "x"))?;
+            let yi = col_index(result, &s(req, "y"))?;
+            let (xs, ys) = two_numeric_pairs(result, xi, yi);
+            match id {
+                "pearson" => htest::pearson_test(&xs, &ys, alpha),
+                "spearman" => htest::spearman_test(&xs, &ys, alpha),
+                "paired_t" => htest::paired_t(&xs, &ys, alpha),
+                "wilcoxon" => htest::wilcoxon_signed_rank(&xs, &ys, alpha),
+                _ => Err(format!("検定「{id}」を実行できません")),
+            }
+        }
+        "categorical" => {
+            let ri = col_index(result, &s(req, "row"))?;
+            let ci = col_index(result, &s(req, "col"))?;
+            let (_rl, _cl, table) = contingency(result, ri, ci)?;
+            match id {
+                "chi_square" => htest::chi_square_independence(&table, alpha),
+                "fisher" if table.len() == 2 && table[0].len() == 2 => {
+                    htest::fisher_exact_2x2(table[0][0], table[0][1], table[1][0], table[1][1], alpha)
+                }
+                _ => Err("Fisher検定は2×2表のみ対応です".to_string()),
+            }
+        }
+        _ => Err("不明なmodeです".to_string()),
+    }
+}
+
+/// 3群以上のペアワイズ事後検定(多重比較補正付き)。
+fn posthoc_pairs(
+    result: &QueryResult,
+    req: &Json,
+    parametric: bool,
+    alpha: f64,
+    correction: Correction,
+) -> BiResult<Json> {
+    let ti = col_index(result, &s(req, "target"))?;
+    let gi = col_index(result, &s(req, "group"))?;
+    let groups = build_groups(result, ti, gi)?;
+    if groups.len() < 3 {
+        return Ok(Json::Null);
+    }
+    let mut pairs: Vec<(String, String)> = vec![];
+    let mut raw_p: Vec<f64> = vec![];
+    let mut stats: Vec<(f64, Option<f64>)> = vec![]; // (統計量, 効果量)
+    for i in 0..groups.len() {
+        for j in (i + 1)..groups.len() {
+            let r = if parametric {
+                htest::welch_t(&groups[i].1, &groups[j].1, alpha)
+            } else {
+                htest::mann_whitney(&groups[i].1, &groups[j].1, alpha)
+            }?;
+            pairs.push((groups[i].0.clone(), groups[j].0.clone()));
+            raw_p.push(r.p_value);
+            stats.push((r.statistic, r.effect.map(|e| e.value)));
+        }
+    }
+    let adj = htest::adjust_pvalues(&raw_p, correction);
+    let method = if parametric {
+        "Welchのt検定"
+    } else {
+        "Mann-Whitney U検定"
+    };
+    let items: Vec<Json> = pairs
+        .iter()
+        .enumerate()
+        .map(|(k, (a, b))| {
+            json!({
+                "a": a, "b": b,
+                "statistic": round4(stats[k].0),
+                "effect": stats[k].1.map(round4).unwrap_or(Json::Null),
+                // p値は丸めず生値で返す(UI側で「<0.0001」表示に整形)
+                "p": raw_p[k],
+                "p_adjusted": adj[k],
+                "significant": adj[k] < alpha,
+            })
+        })
+        .collect();
+    Ok(json!({ "method": method, "pairs": items }))
+}
+
+/// 検定実行 (/api/analyze/test)
+pub fn api_test(state: &mut AppState, req: &Json) -> BiResult<Json> {
+    let result = resolve_source(state, req)?;
+    let alpha = alpha_of(req);
+    let id = s(req, "test");
+    if id.is_empty() {
+        return Err("検定を選択してください".to_string());
+    }
+    let res = run_named_test(&id, &result, req, alpha)?;
+    let correction = Correction::from_str(&s(req, "correction"));
+
+    // 3群以上で分散分析/Kruskalが有意なら、事後のペアワイズ比較を付ける
+    let posthoc = if matches!(id.as_str(), "anova" | "welch_anova" | "kruskal") {
+        let parametric = id != "kruskal";
+        posthoc_pairs(&result, req, parametric, alpha, correction)?
+    } else {
+        Json::Null
+    };
+
+    let correction_label = match correction {
+        Correction::None => "なし(未補正)",
+        Correction::Bonferroni => "Bonferroni",
+        Correction::Holm => "Holm",
+        Correction::BenjaminiHochberg => "Benjamini-Hochberg (FDR)",
+    };
+
+    Ok(json!({
+        "result": serde_json::to_value(&res).map_err(|e| e.to_string())?,
+        "posthoc": posthoc,
+        "correction": correction_label,
+        "note": "この結果は探索的分析です。事前に仮説・指標・検定を決めていない場合、確証的な結論には追試が必要です。",
     }))
 }

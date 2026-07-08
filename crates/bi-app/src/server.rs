@@ -187,6 +187,8 @@ fn handle_api(state: &mut AppState, path: &str, req: &Json) -> BiResult<Json> {
         "/api/analyze/profile" => crate::analysis::api_profile(state, req),
         "/api/analyze/regression" => crate::analysis::api_regression(state, req),
         "/api/analyze/cluster" => crate::analysis::api_cluster(state, req),
+        "/api/analyze/advise" => crate::analysis::api_advise(state, req),
+        "/api/analyze/test" => crate::analysis::api_test(state, req),
         "/api/project/save" => api_project_save(state, req),
         "/api/project/load" => api_project_load(state, req),
         "/api/state" => Ok(json!({
