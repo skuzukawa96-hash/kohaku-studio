@@ -1,6 +1,10 @@
-//! bi-analytics: 統計分析・回帰分析・クラスタリング。
+//! bi-analytics: 統計分析・回帰分析・クラスタリング・統計検定。
 //! 外部依存なしの純Rust実装(低スペックPC向けに軽量)。
 //! NaN は欠損値として扱う。
+
+pub mod advisor;
+pub mod distributions;
+pub mod htest;
 
 use serde::Serialize;
 
