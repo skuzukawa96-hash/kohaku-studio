@@ -812,19 +812,25 @@ function renderTestSelects() {
   if (!fillSelect("tst-group", all) && cat.length) $("tst-group").value = cat[0];
   if (!fillSelect("tst-rowcol", all) && cat.length) $("tst-rowcol").value = cat[0];
   if (!fillSelect("tst-colcol", all) && cat.length) $("tst-colcol").value = cat[cat.length > 1 ? 1 : 0];
+  if (!fillSelect("tst-prop-col", all) && cat.length) $("tst-prop-col").value = cat[0];
   // Y列は既定でX列と別の列に
   if (num.length > 1 && $("tst-y").value === $("tst-x").value) $("tst-y").value = num[1];
 }
 
 function updateTestModeVisibility() {
   const m = $("tst-mode").value;
-  $("tst-target-row").classList.toggle("hidden", m !== "groups");
+  $("tst-target-row").classList.toggle("hidden", m !== "groups" && m !== "one_sample");
   $("tst-group-row").classList.toggle("hidden", m !== "groups");
+  $("tst-indep-row").classList.toggle("hidden", m !== "groups");
   $("tst-x-row").classList.toggle("hidden", m !== "two_numeric");
   $("tst-y-row").classList.toggle("hidden", m !== "two_numeric");
   $("tst-paired-row").classList.toggle("hidden", m !== "two_numeric");
   $("tst-row-row").classList.toggle("hidden", m !== "categorical");
   $("tst-col-row").classList.toggle("hidden", m !== "categorical");
+  $("tst-mu-row").classList.toggle("hidden", m !== "one_sample");
+  $("tst-propcol-row").classList.toggle("hidden", m !== "proportion");
+  $("tst-success-row").classList.toggle("hidden", m !== "proportion");
+  $("tst-p0-row").classList.toggle("hidden", m !== "proportion");
 }
 
 function tstBody() {
@@ -842,6 +848,13 @@ function tstBody() {
     b.x = $("tst-x").value;
     b.y = $("tst-y").value;
     b.paired = $("tst-paired").value === "true";
+  } else if (mode === "one_sample") {
+    b.target = $("tst-target").value;
+    b.mu0 = parseFloat($("tst-mu").value) || 0;
+  } else if (mode === "proportion") {
+    b.column = $("tst-prop-col").value;
+    b.success = $("tst-success").value;
+    b.p0 = parseFloat($("tst-p0").value) || 0.5;
   } else {
     b.row = $("tst-rowcol").value;
     b.col = $("tst-colcol").value;
@@ -868,21 +881,56 @@ function groupTable(items) {
   return h + "</tbody></table></div>";
 }
 
+/** 比率モード用: カテゴリ/件数/比率 の表(group_summariesを流用) */
+function propTable(items) {
+  if (!items || !items.length) return "";
+  let h = '<div class="table-wrap"><table class="grid"><thead><tr><th>カテゴリ</th><th>件数</th><th>比率</th></tr></thead><tbody>';
+  for (const g of items) {
+    h += `<tr><td>${esc(g.label)}</td><td class="num">${g.n}</td><td class="num">${fmtNum(g.mean, 4)}</td></tr>`;
+  }
+  return h + "</tbody></table></div>";
+}
+
+/** 独立性の申告に応じた注意文(仕様: 独立性はデータだけでは判定できない) */
+function independenceWarning() {
+  if ($("tst-mode").value !== "groups") return "";
+  const v = $("tst-indep").value;
+  if (v === "before_after") {
+    return '<div class="hint" style="color:#e0a15c">⚠ 同じ対象のbefore/after比較には、分析タイプ「2つの数値列」→「対応あり」を使用してください。独立群として検定すると誤った結果になります。</div>';
+  }
+  if (v === "repeated") {
+    return '<div class="hint" style="color:#e0a15c">⚠ 同じロット・装置・個体の繰り返し測定は独立ではない可能性があります。検定の前提(独立性)が崩れるため、結果は参考程度に留めてください。</div>';
+  }
+  if (v === "unknown") {
+    return '<div class="hint" style="color:#e0a15c">⚠ サンプルの独立性が不明です。同一対象・同一ロットからの繰り返し測定が含まれる場合、p値は当てになりません。</div>';
+  }
+  return "";
+}
+
 async function tstAdvise() {
   const out = $("tst-advice");
   out.innerHTML = '<div class="hint">診断中...</div>';
   $("tst-run-row").classList.add("hidden");
+  $("btn-tst-md").classList.add("hidden");
   $("tst-result").innerHTML = "";
   try {
+    const mode = $("tst-mode").value;
     const r = await api("/api/analyze/advise", tstBody());
-    let html = `<h4>目的: ${esc(r.intent)}</h4>`;
+    let html = independenceWarning();
+    html += `<h4>目的: ${esc(r.intent)}</h4>`;
     html += `<div class="rec-box"><div>第一候補: <b>${esc(r.primary_label)}</b></div>`;
     if (r.alternatives.length) html += `<div class="hint">代替候補: ${r.alternatives.map((a) => esc(a.label)).join(" / ")}</div>`;
     html += "</div>";
     if (r.reasons.length) html += "<h4>理由</h4><ul>" + r.reasons.map((x) => `<li>${esc(x)}</li>`).join("") + "</ul>";
     if (r.warnings.length) html += "<h4>注意</h4><ul>" + r.warnings.map((x) => `<li>⚠ ${esc(x)}</li>`).join("") + "</ul>";
     html += assumptionTable(r.assumptions);
-    html += groupTable(r.group_summaries);
+    if (mode === "proportion") {
+      html += propTable(r.group_summaries);
+      // 成功カテゴリの選択肢を件数の多い順で用意
+      fillSelect("tst-success", r.group_summaries.map((g) => g.label));
+    } else {
+      html += groupTable(r.group_summaries);
+    }
     out.innerHTML = html;
     // 実行する検定の候補を用意(第一候補を既定に)
     const sel = $("tst-choice");
@@ -907,16 +955,19 @@ async function tstRun() {
     const body = tstBody();
     body.test = $("tst-choice").value;
     const r = await api("/api/analyze/test", body);
+    window.__lastTest = { body, resp: r };
     const t = r.result;
     const metrics = [[t.statistic_name, fmtNum(t.statistic, 4)]];
     if (t.df !== null && t.df !== undefined) metrics.push([t.df2 !== null && t.df2 !== undefined ? "自由度 df1" : "自由度 df", fmtNum(t.df, t.df2 != null ? 0 : 2)]);
     if (t.df2 !== null && t.df2 !== undefined) metrics.push(["自由度 df2", fmtNum(t.df2, 2)]);
     metrics.push(["p値", fmtP(t.p_value)]);
     if (t.effect) metrics.push([t.effect.name + `(${t.effect.magnitude})`, fmtNum(t.effect.value, 3)]);
+    if (r.power !== null && r.power !== undefined) metrics.push(["検出力(参考値)", fmtNum(r.power, 3)]);
     metrics.push(["n", t.n]);
     let html = `<h4>${esc(t.test)}</h4>`;
     html += metricHtml(metrics);
-    html += `<div class="hint">帰無仮説: ${esc(t.null_hypothesis)}</div>`;
+    html += `<div class="hint">帰無仮説: ${esc(t.null_hypothesis)} / 対立仮説(両側): 帰無仮説は成り立たない</div>`;
+    if (r.power !== null && r.power !== undefined) html += '<div class="hint">検出力は観測効果量に基づく事後推定(正規近似)の参考値です。検定の解釈はp値・効果量・信頼区間を優先してください。</div>';
     if (t.estimate !== null && t.estimate !== undefined) {
       let est = `${esc(t.estimate_label || "推定値")}: <b>${fmtNum(t.estimate, 4)}</b>`;
       if (t.ci) est += ` &nbsp; ${Math.round(t.ci.level * 100)}% 信頼区間 [${fmtNum(t.ci.low, 4)}, ${fmtNum(t.ci.high, 4)}]`;
@@ -938,8 +989,62 @@ async function tstRun() {
     }
     html += `<div class="hint" style="margin-top:8px">${esc(r.note)}</div>`;
     out.innerHTML = html;
+    $("btn-tst-md").classList.remove("hidden");
   } catch (e) {
     out.innerHTML = `<div class="hint error">${esc(e.message)}</div>`;
+  }
+}
+
+/** 最後の検定結果をMarkdownレポートとして組み立てる */
+function tstMarkdown() {
+  const lt = window.__lastTest;
+  if (!lt) return "";
+  const t = lt.resp.result;
+  const p = (v) => (v > 0 && v < 0.0001 ? "<0.0001" : v === null || v === undefined ? "—" : Number(v.toFixed(4)));
+  const lines = [`## ${t.test}`, ""];
+  lines.push(`- 帰無仮説: ${t.null_hypothesis}`);
+  lines.push(`- ${t.statistic_name} = ${Number(t.statistic.toFixed(4))}`);
+  if (t.df != null) lines.push(`- 自由度: ${Number(t.df.toFixed(2))}${t.df2 != null ? " / " + Number(t.df2.toFixed(2)) : ""}`);
+  lines.push(`- p値: ${p(t.p_value)}`);
+  if (t.estimate != null) {
+    let est = `- ${t.estimate_label || "推定値"}: ${Number(t.estimate.toFixed(4))}`;
+    if (t.ci) est += `(${Math.round(t.ci.level * 100)}% CI [${Number(t.ci.low.toFixed(4))}, ${Number(t.ci.high.toFixed(4))}])`;
+    lines.push(est);
+  }
+  if (t.effect) lines.push(`- 効果量 ${t.effect.name}: ${Number(t.effect.value.toFixed(3))}(${t.effect.magnitude})`);
+  if (lt.resp.power != null) lines.push(`- 検出力(参考値): ${Number(lt.resp.power.toFixed(3))}`);
+  lines.push(`- n = ${t.n}`);
+  if (t.groups && t.groups.length) {
+    lines.push("", "| 群 | n | 平均 | SD |", "|---|---|---|---|");
+    for (const g of t.groups) lines.push(`| ${g.label} | ${g.n} | ${Number(g.mean.toFixed(4))} | ${isFinite(g.sd) ? Number(g.sd.toFixed(4)) : "—"} |`);
+  }
+  if (t.warnings && t.warnings.length) {
+    lines.push("", "### 注意");
+    for (const w of t.warnings) lines.push(`- ${w}`);
+  }
+  const ph = lt.resp.posthoc;
+  if (ph && ph.pairs) {
+    lines.push("", `### 事後のペアワイズ比較(${ph.method} / 補正: ${lt.resp.correction})`);
+    lines.push("| 群A | 群B | 統計量 | 効果量 | p | p(補正後) | 有意 |", "|---|---|---|---|---|---|---|");
+    for (const x of ph.pairs) lines.push(`| ${x.a} | ${x.b} | ${x.statistic} | ${x.effect ?? "—"} | ${p(x.p)} | ${p(x.p_adjusted)} | ${x.significant ? "✔" : ""} |`);
+  }
+  lines.push("", `> 解釈: ${t.interpretation}`, `> ${lt.resp.note}`, "", `_Kohaku Test Advisor / ${new Date().toISOString().slice(0, 10)}_`);
+  return lines.join("\n");
+}
+
+async function tstCopyMarkdown() {
+  const md = tstMarkdown();
+  if (!md) return;
+  try {
+    await navigator.clipboard.writeText(md);
+    setStatus("Markdownをコピーしました");
+  } catch (_) {
+    // クリップボードAPI不可の環境ではダウンロードにフォールバック
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([md], { type: "text/markdown" }));
+    a.download = "test_result.md";
+    a.click();
+    URL.revokeObjectURL(a.href);
   }
 }
 
@@ -1360,6 +1465,7 @@ function init() {
   };
   $("btn-tst-advise").onclick = tstAdvise;
   $("btn-tst-run").onclick = tstRun;
+  $("btn-tst-md").onclick = tstCopyMarkdown;
   updateTestModeVisibility();
 
   $("btn-dash-refresh").onclick = renderDashboard;

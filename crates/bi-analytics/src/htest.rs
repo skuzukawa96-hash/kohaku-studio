@@ -895,6 +895,294 @@ pub fn spearman_test(x: &[f64], y: &[f64], alpha: f64) -> Result<TestResult, Str
     Ok(correlation_result("Spearman順位相関の検定", r, x.len(), alpha, true))
 }
 
+// ---------- Kendall順位相関 ----------
+
+/// 同順位グループのサイズ一覧(サイズ2以上のみ)。
+fn tie_group_sizes(v: &[f64]) -> Vec<f64> {
+    let mut s = v.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mut out = vec![];
+    let mut run = 1usize;
+    for i in 1..=s.len() {
+        if i < s.len() && s[i] == s[i - 1] {
+            run += 1;
+        } else {
+            if run > 1 {
+                out.push(run as f64);
+            }
+            run = 1;
+        }
+    }
+    out
+}
+
+/// Kendallの順位相関検定 (τ-b, 同順位補正付き正規近似)。
+/// O(n²)のため件数上限あり(低スペックPC保護)。
+pub fn kendall_test(x: &[f64], y: &[f64], alpha: f64) -> Result<TestResult, String> {
+    let n = x.len();
+    if n != y.len() || n < 3 {
+        return Err("同数で3件以上のデータが必要です".to_string());
+    }
+    const KENDALL_MAX: usize = 10_000;
+    if n > KENDALL_MAX {
+        return Err(format!(
+            "Kendall検定は計算量の都合で{KENDALL_MAX}件までです。Spearman順位相関を使用してください。"
+        ));
+    }
+    let mut conc = 0i64;
+    let mut disc = 0i64;
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let dx = x[i] - x[j];
+            let dy = y[i] - y[j];
+            if dx != 0.0 && dy != 0.0 {
+                if (dx > 0.0) == (dy > 0.0) {
+                    conc += 1;
+                } else {
+                    disc += 1;
+                }
+            }
+        }
+    }
+    let nf = n as f64;
+    let tx = tie_group_sizes(x);
+    let ty = tie_group_sizes(y);
+    let n0 = nf * (nf - 1.0) / 2.0;
+    let n1: f64 = tx.iter().map(|t| t * (t - 1.0) / 2.0).sum();
+    let n2: f64 = ty.iter().map(|t| t * (t - 1.0) / 2.0).sum();
+    let denom = ((n0 - n1) * (n0 - n2)).sqrt();
+    if denom <= 0.0 {
+        return Err("いずれかの変数が一定のため相関を計算できません".to_string());
+    }
+    let s = (conc - disc) as f64;
+    let tau = s / denom;
+    // 分散(同順位補正付き)
+    let vt: f64 = tx.iter().map(|t| t * (t - 1.0) * (2.0 * t + 5.0)).sum();
+    let vu: f64 = ty.iter().map(|t| t * (t - 1.0) * (2.0 * t + 5.0)).sum();
+    let v1x: f64 = tx.iter().map(|t| t * (t - 1.0)).sum();
+    let v1y: f64 = ty.iter().map(|t| t * (t - 1.0)).sum();
+    let v2x: f64 = tx.iter().map(|t| t * (t - 1.0) * (t - 2.0)).sum();
+    let v2y: f64 = ty.iter().map(|t| t * (t - 1.0) * (t - 2.0)).sum();
+    let v0 = nf * (nf - 1.0) * (2.0 * nf + 5.0);
+    let mut var_s = (v0 - vt - vu) / 18.0 + v1x * v1y / (2.0 * nf * (nf - 1.0));
+    if n > 2 {
+        var_s += v2x * v2y / (9.0 * nf * (nf - 1.0) * (nf - 2.0));
+    }
+    if var_s <= 0.0 {
+        return Err("分散を計算できません".to_string());
+    }
+    let z = s / var_s.sqrt();
+    let p = dist::normal_sf_two(z);
+    let mut warnings = vec![];
+    if n < 10 {
+        warnings.push("標本が小さく正規近似の精度が落ちます。".to_string());
+    }
+    Ok(TestResult {
+        test: "Kendall順位相関の検定 (τ-b)".to_string(),
+        null_hypothesis: "母順位相関(τ)は0(無相関)".to_string(),
+        statistic_name: "z".to_string(),
+        statistic: z,
+        df: None,
+        df2: None,
+        p_value: p,
+        estimate: Some(tau),
+        estimate_label: Some("Kendallのτ-b".to_string()),
+        ci: None,
+        effect: Some(EffectSize {
+            name: "τ-b".to_string(),
+            value: tau,
+            magnitude: mag_r(tau),
+        }),
+        n,
+        groups: vec![],
+        warnings,
+        interpretation: sig_comment(p, alpha),
+    })
+}
+
+// ---------- 1標本Wilcoxon・二項検定・分散の比較 ----------
+
+/// 1標本Wilcoxon符号付順位検定(分布の中心と基準値の比較)。
+pub fn wilcoxon_one_sample(x: &[f64], mu0: f64, alpha: f64) -> Result<TestResult, String> {
+    let b = vec![mu0; x.len()];
+    let mut r = wilcoxon_signed_rank(x, &b, alpha)?;
+    r.test = "Wilcoxon符号付順位検定(1標本)".to_string();
+    r.null_hypothesis = format!("分布の中心(中央値)は {mu0} に等しい");
+    r.groups = vec![summary("標本", x)];
+    Ok(r)
+}
+
+/// 二項検定(正確法・両側)。観測比率が基準比率 p0 と異なるかを検定する。
+/// 信頼区間はWilsonスコア区間。
+pub fn binomial_test(k: u64, n: u64, p0: f64, alpha: f64) -> Result<TestResult, String> {
+    if n == 0 {
+        return Err("データがありません".to_string());
+    }
+    if k > n {
+        return Err("成功数が総数を超えています".to_string());
+    }
+    if !(p0 > 0.0 && p0 < 1.0) {
+        return Err("基準比率は0より大きく1未満で指定してください".to_string());
+    }
+    let nf = n as f64;
+    let ln_pmf = |i: u64| -> f64 {
+        dist::ln_gamma(nf + 1.0)
+            - dist::ln_gamma(i as f64 + 1.0)
+            - dist::ln_gamma((n - i) as f64 + 1.0)
+            + i as f64 * p0.ln()
+            + (n - i) as f64 * (1.0 - p0).ln()
+    };
+    // 両側p値: 観測値以下の確率を持つ結果を全て合算(scipyと同じ方式)
+    let obs = ln_pmf(k);
+    let mut p = 0.0;
+    for i in 0..=n {
+        let lp = ln_pmf(i);
+        if lp <= obs + 1e-7 {
+            p += lp.exp();
+        }
+    }
+    let p = p.min(1.0);
+    let phat = k as f64 / nf;
+    // Wilsonスコア信頼区間
+    let zc = dist::normal_ppf(1.0 - alpha / 2.0);
+    let dn = 1.0 + zc * zc / nf;
+    let center = (phat + zc * zc / (2.0 * nf)) / dn;
+    let half = zc * ((phat * (1.0 - phat) + zc * zc / (4.0 * nf)) / nf).sqrt() / dn;
+    // 効果量: Cohen's h
+    let h = 2.0 * phat.sqrt().asin() - 2.0 * p0.sqrt().asin();
+    let mut warnings = vec![];
+    if n < 20 {
+        warnings.push("標本サイズが小さいため、結果は慎重に解釈してください。".to_string());
+    }
+    Ok(TestResult {
+        test: "二項検定(正確法)".to_string(),
+        null_hypothesis: format!("成功比率は {p0} に等しい"),
+        statistic_name: "成功数 k".to_string(),
+        statistic: k as f64,
+        df: None,
+        df2: None,
+        p_value: p,
+        estimate: Some(phat),
+        estimate_label: Some("観測比率".to_string()),
+        ci: Some(ConfidenceInterval {
+            level: 1.0 - alpha,
+            low: (center - half).max(0.0),
+            high: (center + half).min(1.0),
+        }),
+        effect: Some(EffectSize {
+            name: "Cohen's h".to_string(),
+            value: h,
+            magnitude: mag_d(h),
+        }),
+        n: n as usize,
+        groups: vec![],
+        warnings,
+        interpretation: sig_comment(p, alpha),
+    })
+}
+
+/// Levene検定の中核計算。(W統計量, df1, df2, p値) を返す。
+fn levene_core(groups: &[Vec<f64>]) -> Option<(f64, f64, f64, f64)> {
+    let k = groups.len();
+    if k < 2 || groups.iter().any(|g| g.len() < 2) {
+        return None;
+    }
+    // 各値の「群中央値からの絶対偏差」でANOVA(中央値ベース = Brown-Forsythe)
+    let z: Vec<Vec<f64>> = groups
+        .iter()
+        .map(|g| {
+            let med = median(g);
+            g.iter().map(|v| (v - med).abs()).collect()
+        })
+        .collect();
+    let total_n: usize = z.iter().map(|g| g.len()).sum();
+    let all: Vec<f64> = z.iter().flatten().copied().collect();
+    let grand = mean(&all);
+    let ss_b: f64 = z
+        .iter()
+        .map(|g| g.len() as f64 * (mean(g) - grand).powi(2))
+        .sum();
+    let ss_w: f64 = z
+        .iter()
+        .map(|g| {
+            let m = mean(g);
+            g.iter().map(|v| (v - m).powi(2)).sum::<f64>()
+        })
+        .sum();
+    let df1 = (k - 1) as f64;
+    let df2 = (total_n - k) as f64;
+    if ss_w == 0.0 {
+        return None;
+    }
+    let w = (ss_b / df1) / (ss_w / df2);
+    let p = dist::f_sf(w, df1, df2);
+    Some((w, df1, df2, p))
+}
+
+/// Levene検定(中央値ベース = Brown-Forsythe)を独立した検定として実行する。
+pub fn levene_test(groups: &[Vec<f64>], alpha: f64) -> Result<TestResult, String> {
+    let (w, df1, df2, p) =
+        levene_core(groups).ok_or("各群に2件以上のデータが必要です(偏差が全て0の場合も不可)")?;
+    let n: usize = groups.iter().map(|g| g.len()).sum();
+    Ok(TestResult {
+        test: "Levene検定(中央値ベース / Brown-Forsythe)".to_string(),
+        null_hypothesis: "全群の母分散は等しい".to_string(),
+        statistic_name: "W".to_string(),
+        statistic: w,
+        df: Some(df1),
+        df2: Some(df2),
+        p_value: p,
+        estimate: None,
+        estimate_label: None,
+        ci: None,
+        effect: None,
+        n,
+        groups: groups
+            .iter()
+            .enumerate()
+            .map(|(i, g)| summary(&format!("群{}", i + 1), g))
+            .collect(),
+        warnings: vec!["中央値ベースのため正規性からの逸脱に頑健です。".to_string()],
+        interpretation: sig_comment(p, alpha),
+    })
+}
+
+/// F検定(2群の分散比)。正規性の逸脱に敏感なため参考用途。
+pub fn f_var_test(a: &[f64], b: &[f64], alpha: f64) -> Result<TestResult, String> {
+    let (na, nb) = (a.len(), b.len());
+    if na < 2 || nb < 2 {
+        return Err("各群に2件以上のデータが必要です".to_string());
+    }
+    let (va, vb) = (var(a), var(b));
+    if vb <= 0.0 || va <= 0.0 {
+        return Err("いずれかの群の分散が0のため検定できません".to_string());
+    }
+    let f = va / vb;
+    let df1 = (na - 1) as f64;
+    let df2 = (nb - 1) as f64;
+    let sf = dist::f_sf(f, df1, df2);
+    let p = (2.0 * sf.min(1.0 - sf)).min(1.0);
+    Ok(TestResult {
+        test: "F検定(2群の分散比)".to_string(),
+        null_hypothesis: "2群の母分散は等しい".to_string(),
+        statistic_name: "F".to_string(),
+        statistic: f,
+        df: Some(df1),
+        df2: Some(df2),
+        p_value: p,
+        estimate: Some(f),
+        estimate_label: Some("分散比 (群1/群2)".to_string()),
+        ci: None,
+        effect: None,
+        n: na + nb,
+        groups: vec![summary("群1", a), summary("群2", b)],
+        warnings: vec![
+            "F検定は正規性の逸脱に敏感です。頑健なLevene検定の併用を推奨します。".to_string(),
+        ],
+        interpretation: sig_comment(p, alpha),
+    })
+}
+
 // ---------- 前提条件チェック ----------
 
 #[derive(Debug, Clone, Serialize)]
@@ -931,39 +1219,7 @@ pub fn jarque_bera(x: &[f64]) -> Option<AssumptionCheck> {
 
 /// Levene検定(中央値ベース = Brown-Forsythe, 等分散性)。
 pub fn levene(groups: &[Vec<f64>]) -> Option<AssumptionCheck> {
-    let k = groups.len();
-    if k < 2 || groups.iter().any(|g| g.len() < 2) {
-        return None;
-    }
-    // 各値の「群中央値からの絶対偏差」でANOVA
-    let z: Vec<Vec<f64>> = groups
-        .iter()
-        .map(|g| {
-            let med = median(g);
-            g.iter().map(|v| (v - med).abs()).collect()
-        })
-        .collect();
-    let total_n: usize = z.iter().map(|g| g.len()).sum();
-    let all: Vec<f64> = z.iter().flatten().copied().collect();
-    let grand = mean(&all);
-    let ss_b: f64 = z
-        .iter()
-        .map(|g| g.len() as f64 * (mean(g) - grand).powi(2))
-        .sum();
-    let ss_w: f64 = z
-        .iter()
-        .map(|g| {
-            let m = mean(g);
-            g.iter().map(|v| (v - m).powi(2)).sum::<f64>()
-        })
-        .sum();
-    let df1 = (k - 1) as f64;
-    let df2 = (total_n - k) as f64;
-    if ss_w == 0.0 {
-        return None;
-    }
-    let w = (ss_b / df1) / (ss_w / df2);
-    let p = dist::f_sf(w, df1, df2);
+    let (w, _df1, _df2, p) = levene_core(groups)?;
     Some(AssumptionCheck {
         name: "等分散性 (Levene)".to_string(),
         statistic: w,
@@ -985,6 +1241,7 @@ pub enum Correction {
     Bonferroni,
     Holm,
     BenjaminiHochberg,
+    BenjaminiYekutieli,
 }
 
 impl Correction {
@@ -993,6 +1250,7 @@ impl Correction {
             "bonferroni" => Correction::Bonferroni,
             "holm" => Correction::Holm,
             "bh" | "benjamini-hochberg" | "fdr" => Correction::BenjaminiHochberg,
+            "by" | "benjamini-yekutieli" => Correction::BenjaminiYekutieli,
             _ => Correction::None,
         }
     }
@@ -1020,20 +1278,29 @@ pub fn adjust_pvalues(p: &[f64], method: Correction) -> Vec<f64> {
             }
             adj
         }
-        Correction::BenjaminiHochberg => {
-            let mut idx: Vec<usize> = (0..m).collect();
-            idx.sort_by(|&i, &j| p[j].partial_cmp(&p[i]).unwrap()); // 降順
-            let mut adj = vec![0.0; m];
-            let mut running: f64 = 1.0;
-            for (rank_from_top, &i) in idx.iter().enumerate() {
-                let rank = m - rank_from_top; // 昇順での順位(大きい方からm,m-1,...)
-                let val = (p[i] * mf / rank as f64).min(1.0);
-                running = running.min(val);
-                adj[i] = running;
-            }
-            adj
+        Correction::BenjaminiHochberg => fdr_adjust(p, mf),
+        Correction::BenjaminiYekutieli => {
+            // BHに調和級数 c(m) = Σ 1/i を掛けた保守版(依存が強い検定群向け)
+            let c: f64 = (1..=m).map(|i| 1.0 / i as f64).sum();
+            fdr_adjust(p, mf * c)
         }
     }
+}
+
+/// FDR系補正の共通処理(factor = m または m·c(m))。
+fn fdr_adjust(p: &[f64], factor: f64) -> Vec<f64> {
+    let m = p.len();
+    let mut idx: Vec<usize> = (0..m).collect();
+    idx.sort_by(|&i, &j| p[j].partial_cmp(&p[i]).unwrap()); // 降順
+    let mut adj = vec![0.0; m];
+    let mut running: f64 = 1.0;
+    for (rank_from_top, &i) in idx.iter().enumerate() {
+        let rank = m - rank_from_top; // 昇順での順位(大きい方からm,m-1,...)
+        let val = (p[i] * factor / rank as f64).min(1.0);
+        running = running.min(val);
+        adj[i] = running;
+    }
+    adj
 }
 
 #[cfg(test)]
@@ -1042,6 +1309,68 @@ mod tests {
 
     fn close(a: f64, b: f64, tol: f64) -> bool {
         (a - b).abs() < tol
+    }
+
+    #[test]
+    fn test_kendall() {
+        // C=8, D=2 → τ=0.6, z=1.4697 → p≈0.1416(正規近似)
+        let x = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let y = [1.0, 3.0, 2.0, 5.0, 4.0];
+        let r = kendall_test(&x, &y, 0.05).unwrap();
+        assert!(close(r.estimate.unwrap(), 0.6, 1e-9));
+        assert!(close(r.p_value, 0.1416, 5e-3));
+        // 完全一致順位 → τ=1
+        let r2 = kendall_test(&x, &x, 0.05).unwrap();
+        assert!(close(r2.estimate.unwrap(), 1.0, 1e-9));
+    }
+
+    #[test]
+    fn test_binomial() {
+        // Bin(20, 0.5) で k=15: 両側p = 2*P(X≥15) = 43400/2^20 ≈ 0.041389
+        let r = binomial_test(15, 20, 0.5, 0.05).unwrap();
+        assert!(close(r.p_value, 0.041389, 1e-4));
+        assert!(close(r.estimate.unwrap(), 0.75, 1e-9));
+        // 基準通りの比率 → p は 1 に近い
+        let r2 = binomial_test(10, 20, 0.5, 0.05).unwrap();
+        assert!(r2.p_value > 0.9);
+    }
+
+    #[test]
+    fn test_wilcoxon_one_sample() {
+        // 全て正の値 vs mu0=0 → 有意
+        let x = [1.1, 2.3, 0.8, 1.9, 2.5, 1.2, 0.7, 1.8, 2.2, 1.4];
+        let r = wilcoxon_one_sample(&x, 0.0, 0.05).unwrap();
+        assert!(r.p_value < 0.01);
+    }
+
+    #[test]
+    fn test_levene_test_and_f_var() {
+        // 分散が大きく異なる2群
+        let a = [1.0, 5.0, 9.0, 2.0, 8.0, 3.0, 7.0, 1.5, 8.5, 4.0];
+        let b = [5.0, 5.2, 4.8, 5.1, 4.9, 5.0, 5.3, 4.7, 5.1, 4.9];
+        let lv = levene_test(&[a.to_vec(), b.to_vec()], 0.05).unwrap();
+        assert!(lv.p_value < 0.01);
+        let fv = f_var_test(&a, &b, 0.05).unwrap();
+        assert!(fv.p_value < 0.001);
+        assert!(fv.statistic > 1.0); // va > vb
+        // 分散が同程度なら有意にならない
+        let c = [1.0, 5.0, 9.0, 2.0, 8.0, 3.0, 7.0, 1.5, 8.5, 4.0];
+        let lv2 = levene_test(&[a.to_vec(), c.to_vec()], 0.05).unwrap();
+        assert!(lv2.p_value > 0.9);
+    }
+
+    #[test]
+    fn test_by_adjust() {
+        // BH: 全て0.04 / BY: ×c(4)=2.0833… → 0.08333
+        let p = [0.01, 0.02, 0.03, 0.04];
+        let bh = adjust_pvalues(&p, Correction::BenjaminiHochberg);
+        for v in &bh {
+            assert!(close(*v, 0.04, 1e-9));
+        }
+        let by = adjust_pvalues(&p, Correction::BenjaminiYekutieli);
+        for v in &by {
+            assert!(close(*v, 0.04 * (1.0 + 0.5 + 1.0 / 3.0 + 0.25), 1e-9));
+        }
     }
 
     #[test]

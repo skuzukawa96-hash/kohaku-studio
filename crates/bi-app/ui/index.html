@@ -162,10 +162,20 @@
               <option value="groups">数値 × グループ列</option>
               <option value="two_numeric">2つの数値列</option>
               <option value="categorical">カテゴリ × カテゴリ</option>
+              <option value="one_sample">1標本(基準値と比較)</option>
+              <option value="proportion">比率(二項検定)</option>
             </select>
           </label>
           <label id="tst-target-row">目的変数(数値) <select id="tst-target"></select></label>
           <label id="tst-group-row">グループ列 <select id="tst-group"></select></label>
+          <label id="tst-indep-row">サンプルの独立性
+            <select id="tst-indep">
+              <option value="independent">独立したサンプル</option>
+              <option value="before_after">同じ対象のbefore/after</option>
+              <option value="repeated">同じロット・装置・個体の繰り返し測定</option>
+              <option value="unknown">わからない</option>
+            </select>
+          </label>
           <label id="tst-x-row" class="hidden">X列(数値) <select id="tst-x"></select></label>
           <label id="tst-y-row" class="hidden">Y列(数値) <select id="tst-y"></select></label>
           <label id="tst-paired-row" class="hidden">比較種別
@@ -176,11 +186,16 @@
           </label>
           <label id="tst-row-row" class="hidden">行カテゴリ <select id="tst-rowcol"></select></label>
           <label id="tst-col-row" class="hidden">列カテゴリ <select id="tst-colcol"></select></label>
+          <label id="tst-mu-row" class="hidden">基準値 μ₀ <input id="tst-mu" type="number" value="0" step="any"></label>
+          <label id="tst-propcol-row" class="hidden">対象列(カテゴリ) <select id="tst-prop-col"></select></label>
+          <label id="tst-success-row" class="hidden">成功カテゴリ <select id="tst-success"></select></label>
+          <label id="tst-p0-row" class="hidden">基準比率 p₀ <input id="tst-p0" type="number" value="0.5" min="0.01" max="0.99" step="0.01"></label>
           <label>有意水準 α <input id="tst-alpha" type="number" value="0.05" min="0.001" max="0.2" step="0.01"></label>
           <label>多重比較補正
             <select id="tst-correction">
               <option value="holm">Holm</option>
               <option value="bh">Benjamini-Hochberg (FDR)</option>
+              <option value="by">Benjamini-Yekutieli (保守的)</option>
               <option value="bonferroni">Bonferroni</option>
               <option value="none">なし(未補正)</option>
             </select>
@@ -191,6 +206,7 @@
         <div id="tst-run-row" class="an-controls hidden">
           <label>実行する検定 <select id="tst-choice"></select></label>
           <button id="btn-tst-run" class="primary">▶ 検定を実行</button>
+          <button id="btn-tst-md" class="hidden">📋 Markdownコピー</button>
         </div>
         <div id="tst-result" class="an-out"></div>
       </div>

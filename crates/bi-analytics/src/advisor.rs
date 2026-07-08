@@ -169,6 +169,8 @@ pub fn advise_numeric_groups(
                 opt("welch_t", "Welchのt検定"),
                 opt("student_t", "Studentのt検定(等分散)"),
                 opt("mann_whitney", "Mann-Whitney U検定"),
+                opt("levene", "(分散の比較) Levene検定"),
+                opt("f_var", "(分散の比較) F検定"),
             ],
         });
     }
@@ -221,7 +223,101 @@ pub fn advise_numeric_groups(
             opt("anova", "一元配置分散分析 (ANOVA)"),
             opt("welch_anova", "Welchの分散分析"),
             opt("kruskal", "Kruskal-Wallis検定"),
+            opt("levene", "(分散の比較) Levene検定"),
         ],
+    })
+}
+
+/// 1標本(数値列と基準値の比較)の検定提案。
+pub fn advise_one_sample(x: &[f64], mu0: f64) -> Result<Recommendation, String> {
+    if x.len() < 3 {
+        return Err("3件以上の数値データが必要です".to_string());
+    }
+    let mut assumptions = vec![];
+    let jb = htest::jarque_bera(x);
+    let normal_ok = jb.as_ref().map(|a| a.passed).unwrap_or(true);
+    if let Some(a) = jb {
+        assumptions.push(a);
+    }
+    let mut reasons = vec![format!(
+        "数値列の中心(平均・中央値)が基準値 {mu0} と異なるかを検定します。"
+    )];
+    let mut warnings = vec![];
+    if x.len() < 15 {
+        warnings.push("標本サイズが小さいため、結果は慎重に解釈してください。".to_string());
+    }
+    let (primary, primary_label, alt) = if normal_ok {
+        (
+            "one_sample_t",
+            "1標本t検定",
+            vec![opt("wilcoxon_1s", "Wilcoxon符号付順位検定(1標本)")],
+        )
+    } else {
+        reasons.push("正規性に疑いがあるため、ノンパラメトリックを第一候補にしました。".to_string());
+        (
+            "wilcoxon_1s",
+            "Wilcoxon符号付順位検定(1標本)",
+            vec![opt("one_sample_t", "1標本t検定")],
+        )
+    };
+    Ok(Recommendation {
+        intent: "1標本の基準値比較".to_string(),
+        primary: primary.to_string(),
+        primary_label: primary_label.to_string(),
+        alternatives: alt,
+        reasons,
+        warnings,
+        assumptions,
+        group_summaries: vec![group_summary("標本", x)],
+        available: vec![
+            opt("one_sample_t", "1標本t検定"),
+            opt("wilcoxon_1s", "Wilcoxon符号付順位検定(1標本)"),
+        ],
+    })
+}
+
+/// 比率(二項検定)の提案。counts はカテゴリ別の件数(出現順)。
+/// group_summaries に カテゴリ/件数/比率 を入れて返す(UIの成功カテゴリ選択用)。
+pub fn advise_proportion(counts: &[(String, usize)]) -> Result<Recommendation, String> {
+    if counts.is_empty() {
+        return Err("対象列に値がありません".to_string());
+    }
+    let total: usize = counts.iter().map(|(_, c)| c).sum();
+    // 件数の多い順に並べる(UIの既定選択が自然になる)
+    let mut sorted: Vec<&(String, usize)> = counts.iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    let summaries: Vec<GroupSummary> = sorted
+        .iter()
+        .map(|(l, c)| GroupSummary {
+            label: l.clone(),
+            n: *c,
+            mean: *c as f64 / total as f64, // 比率
+            sd: f64::NAN,
+        })
+        .collect();
+    let mut warnings = vec![];
+    if counts.len() > 2 {
+        warnings.push(
+            "カテゴリが3種類以上あります。「成功」とみなすカテゴリを1つ選ぶと、それ以外をまとめて二値化して検定します。"
+                .to_string(),
+        );
+    }
+    if total < 20 {
+        warnings.push("標本サイズが小さいため、結果は慎重に解釈してください。".to_string());
+    }
+    Ok(Recommendation {
+        intent: "比率と基準値の比較".to_string(),
+        primary: "binomial".to_string(),
+        primary_label: "二項検定(正確法)".to_string(),
+        alternatives: vec![],
+        reasons: vec![
+            "選んだカテゴリの出現比率が基準比率と異なるかを、正確な二項分布で検定します。"
+                .to_string(),
+        ],
+        warnings,
+        assumptions: vec![],
+        group_summaries: summaries,
+        available: vec![opt("binomial", "二項検定(正確法)")],
     })
 }
 
@@ -247,7 +343,7 @@ pub fn advise_two_numeric(x: &[f64], y: &[f64]) -> Result<Recommendation, String
             ..a
         });
     }
-    let (primary, primary_label, alt) = if both_normal {
+    let (primary, primary_label, mut alt) = if both_normal {
         (
             "pearson",
             "Pearson相関の検定",
@@ -260,10 +356,21 @@ pub fn advise_two_numeric(x: &[f64], y: &[f64]) -> Result<Recommendation, String
             vec![opt("pearson", "Pearson相関の検定")],
         )
     };
+    // Kendallは小標本・同順位が多い場合の代替(計算量の都合で1万件まで)
+    if x.len() <= 10_000 {
+        alt.push(opt("kendall", "Kendall順位相関の検定 (τ-b)"));
+    }
     let mut reasons = vec!["2つの数値変数の関連(相関)を検定します。".to_string()];
     if !both_normal {
         reasons
             .push("正規性に疑いがあるため、外れ値に頑健なSpearmanを第一候補にしました。".to_string());
+    }
+    let mut available = vec![
+        opt("pearson", "Pearson相関の検定"),
+        opt("spearman", "Spearman順位相関の検定"),
+    ];
+    if x.len() <= 10_000 {
+        available.push(opt("kendall", "Kendall順位相関の検定 (τ-b)"));
     }
     Ok(Recommendation {
         intent: "2変数の相関の検定".to_string(),
@@ -274,10 +381,7 @@ pub fn advise_two_numeric(x: &[f64], y: &[f64]) -> Result<Recommendation, String
         warnings: vec![],
         assumptions,
         group_summaries: vec![group_summary("X", x), group_summary("Y", y)],
-        available: vec![
-            opt("pearson", "Pearson相関の検定"),
-            opt("spearman", "Spearman順位相関の検定"),
-        ],
+        available,
     })
 }
 

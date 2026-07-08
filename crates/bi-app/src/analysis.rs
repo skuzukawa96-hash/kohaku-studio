@@ -497,6 +497,48 @@ fn alpha_of(req: &Json) -> f64 {
         .unwrap_or(0.05)
 }
 
+/// 数値列の有限値のみを取り出す。
+fn col_finite(result: &QueryResult, idx: usize) -> Vec<f64> {
+    col_f64(result, idx)
+        .into_iter()
+        .filter(|v| v.is_finite())
+        .collect()
+}
+
+/// カテゴリ列の値別件数(出現順、NULL除外)。
+fn category_counts(result: &QueryResult, ci: usize) -> BiResult<Vec<(String, usize)>> {
+    let mut order: Vec<String> = vec![];
+    let mut map: HashMap<String, usize> = HashMap::new();
+    for row in &result.rows {
+        if matches!(row[ci], Value::Null) {
+            continue;
+        }
+        let label = value_label(&row[ci]);
+        if !map.contains_key(&label) {
+            if order.len() >= MAX_GROUPS {
+                return Err(format!(
+                    "カテゴリが多すぎます(最大{MAX_GROUPS}種類)。列を見直してください。"
+                ));
+            }
+            order.push(label.clone());
+        }
+        *map.entry(label).or_insert(0) += 1;
+    }
+    Ok(order.into_iter().map(|k| {
+        let c = map[&k];
+        (k, c)
+    }).collect())
+}
+
+/// 基準比率 p0 (0〜1) を取得。
+fn p0_of(req: &Json) -> BiResult<f64> {
+    let p0 = req.get("p0").and_then(|x| x.as_f64()).unwrap_or(0.5);
+    if !(p0 > 0.0 && p0 < 1.0) {
+        return Err("基準比率は0より大きく1未満で指定してください".to_string());
+    }
+    Ok(p0)
+}
+
 /// 検定候補の提案 (/api/analyze/advise)
 pub fn api_advise(state: &mut AppState, req: &Json) -> BiResult<Json> {
     let result = resolve_source(state, req)?;
@@ -532,7 +574,26 @@ pub fn api_advise(state: &mut AppState, req: &Json) -> BiResult<Json> {
             let (_rl, _cl, table) = contingency(&result, ri, ci)?;
             bi_analytics::advisor::advise_categorical(&table)?
         }
-        _ => return Err("mode は groups / two_numeric / categorical のいずれか".to_string()),
+        "one_sample" => {
+            let ti = col_index(&result, &s(req, "target"))?;
+            if !is_numeric_col(&result, ti) {
+                return Err("対象は数値列を選んでください".to_string());
+            }
+            let xs = col_finite(&result, ti);
+            let mu0 = req.get("mu0").and_then(|x| x.as_f64()).unwrap_or(0.0);
+            bi_analytics::advisor::advise_one_sample(&xs, mu0)?
+        }
+        "proportion" => {
+            let ci = col_index(&result, &s(req, "column"))?;
+            let counts = category_counts(&result, ci)?;
+            bi_analytics::advisor::advise_proportion(&counts)?
+        }
+        _ => {
+            return Err(
+                "mode は groups / two_numeric / categorical / one_sample / proportion のいずれか"
+                    .to_string(),
+            )
+        }
     };
     serde_json::to_value(&rec).map_err(|e| e.to_string())
 }
@@ -555,9 +616,11 @@ fn run_named_test(
                 "welch_t" if gv.len() == 2 => htest::welch_t(&gv[0], &gv[1], alpha),
                 "student_t" if gv.len() == 2 => htest::student_t(&gv[0], &gv[1], alpha),
                 "mann_whitney" if gv.len() == 2 => htest::mann_whitney(&gv[0], &gv[1], alpha),
+                "f_var" if gv.len() == 2 => htest::f_var_test(&gv[0], &gv[1], alpha),
                 "anova" => htest::one_way_anova(&gv, alpha),
                 "welch_anova" => htest::welch_anova(&gv, alpha),
                 "kruskal" => htest::kruskal_wallis(&gv, alpha),
+                "levene" => htest::levene_test(&gv, alpha),
                 _ => Err(format!("この群構成では検定「{id}」を実行できません")),
             }?;
             // 汎用ラベル(群1,群2,...)を実際のカテゴリ名に置き換える
@@ -573,6 +636,7 @@ fn run_named_test(
             match id {
                 "pearson" => htest::pearson_test(&xs, &ys, alpha),
                 "spearman" => htest::spearman_test(&xs, &ys, alpha),
+                "kendall" => htest::kendall_test(&xs, &ys, alpha),
                 "paired_t" => htest::paired_t(&xs, &ys, alpha),
                 "wilcoxon" => htest::wilcoxon_signed_rank(&xs, &ys, alpha),
                 _ => Err(format!("検定「{id}」を実行できません")),
@@ -590,8 +654,54 @@ fn run_named_test(
                 _ => Err("Fisher検定は2×2表のみ対応です".to_string()),
             }
         }
+        "one_sample" => {
+            let ti = col_index(result, &s(req, "target"))?;
+            let xs = col_finite(result, ti);
+            let mu0 = req.get("mu0").and_then(|x| x.as_f64()).unwrap_or(0.0);
+            match id {
+                "one_sample_t" => htest::one_sample_t(&xs, mu0, alpha),
+                "wilcoxon_1s" => htest::wilcoxon_one_sample(&xs, mu0, alpha),
+                _ => Err(format!("検定「{id}」を実行できません")),
+            }
+        }
+        "proportion" => {
+            let ci = col_index(result, &s(req, "column"))?;
+            let success = s(req, "success");
+            if success.is_empty() {
+                return Err("「成功」とみなすカテゴリを選択してください".to_string());
+            }
+            let counts = category_counts(result, ci)?;
+            let n: usize = counts.iter().map(|(_, c)| c).sum();
+            let k = counts
+                .iter()
+                .find(|(l, _)| *l == success)
+                .map(|(_, c)| *c)
+                .ok_or_else(|| format!("カテゴリ「{success}」が見つかりません"))?;
+            let p0 = p0_of(req)?;
+            match id {
+                "binomial" => htest::binomial_test(k as u64, n as u64, p0, alpha),
+                _ => Err(format!("検定「{id}」を実行できません")),
+            }
+        }
         _ => Err("不明なmodeです".to_string()),
     }
+}
+
+/// t系検定の事後検出力(観測効果量に基づく正規近似, 参考値)。
+fn approx_power(id: &str, r: &htest::TestResult, alpha: f64) -> Option<f64> {
+    use bi_analytics::distributions as dist;
+    let d = r.effect.as_ref()?.value.abs();
+    let delta = match id {
+        "welch_t" | "student_t" => {
+            let n1 = r.groups.first()?.n as f64;
+            let n2 = r.groups.get(1)?.n as f64;
+            d * (n1 * n2 / (n1 + n2)).sqrt()
+        }
+        "paired_t" | "one_sample_t" => d * (r.n as f64).sqrt(),
+        _ => return None,
+    };
+    let z = dist::normal_ppf(1.0 - alpha / 2.0);
+    Some(dist::normal_cdf(delta - z) + dist::normal_cdf(-delta - z))
 }
 
 /// 3群以上のペアワイズ事後検定(多重比較補正付き)。
@@ -671,12 +781,18 @@ pub fn api_test(state: &mut AppState, req: &Json) -> BiResult<Json> {
         Correction::Bonferroni => "Bonferroni",
         Correction::Holm => "Holm",
         Correction::BenjaminiHochberg => "Benjamini-Hochberg (FDR)",
+        Correction::BenjaminiYekutieli => "Benjamini-Yekutieli (FDR, 保守的)",
     };
+
+    let power = approx_power(&id, &res, alpha)
+        .map(round4)
+        .unwrap_or(Json::Null);
 
     Ok(json!({
         "result": serde_json::to_value(&res).map_err(|e| e.to_string())?,
         "posthoc": posthoc,
         "correction": correction_label,
+        "power": power,
         "note": "この結果は探索的分析です。事前に仮説・指標・検定を決めていない場合、確証的な結論には追試が必要です。",
     }))
 }
