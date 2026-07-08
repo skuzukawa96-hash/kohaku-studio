@@ -283,8 +283,7 @@ fn two_group_t(a: &[f64], b: &[f64], alpha: f64, welch: bool) -> Result<TestResu
     let g = d * j;
     let mut warnings = vec![];
     if !welch && (va.max(vb) / va.min(vb).max(1e-12)) > 3.0 {
-        warnings
-            .push("群間の分散差が大きいです。Welchのt検定の使用を推奨します。".to_string());
+        warnings.push("群間の分散差が大きいです。Welchのt検定の使用を推奨します。".to_string());
     }
     if na < 15 || nb < 15 {
         warnings.push("標本サイズが小さいため正規性の影響を受けやすいです。".to_string());
@@ -392,14 +391,9 @@ pub fn mann_whitney(a: &[f64], b: &[f64], alpha: f64) -> Result<TestResult, Stri
     let n = (na + nb) as f64;
     let u1 = r1 - na as f64 * (na as f64 + 1.0) / 2.0;
     let mu = na as f64 * nb as f64 / 2.0;
-    let sigma2 =
-        na as f64 * nb as f64 / 12.0 * ((n + 1.0) - tie_sum / (n * (n - 1.0)));
+    let sigma2 = na as f64 * nb as f64 / 12.0 * ((n + 1.0) - tie_sum / (n * (n - 1.0)));
     let sigma = sigma2.sqrt();
-    let z = if sigma > 0.0 {
-        (u1 - mu) / sigma
-    } else {
-        0.0
-    };
+    let z = if sigma > 0.0 { (u1 - mu) / sigma } else { 0.0 };
     let p = dist::normal_sf_two(z);
     let rb = 1.0 - 2.0 * u1 / (na as f64 * nb as f64); // rank-biserial (符号は群1基準)
     let mut warnings = vec![];
@@ -456,7 +450,11 @@ pub fn wilcoxon_signed_rank(a: &[f64], b: &[f64], alpha: f64) -> Result<TestResu
     let mu = nn * (nn + 1.0) / 4.0;
     let sigma2 = nn * (nn + 1.0) * (2.0 * nn + 1.0) / 24.0 - tie_sum / 48.0;
     let sigma = sigma2.sqrt();
-    let z = if sigma > 0.0 { (w_plus - mu) / sigma } else { 0.0 };
+    let z = if sigma > 0.0 {
+        (w_plus - mu) / sigma
+    } else {
+        0.0
+    };
     let p = dist::normal_sf_two(z);
     let rb = z / nn.sqrt(); // 近似効果量 r = z/√N
     let mut warnings = vec![];
@@ -570,7 +568,12 @@ pub fn welch_anova(groups: &[Vec<f64>], alpha: f64) -> Result<TestResult, String
         w[i] = ns[i] / v;
     }
     let sw: f64 = w.iter().sum();
-    let xbar: f64 = w.iter().zip(means.iter()).map(|(wi, mi)| wi * mi).sum::<f64>() / sw;
+    let xbar: f64 = w
+        .iter()
+        .zip(means.iter())
+        .map(|(wi, mi)| wi * mi)
+        .sum::<f64>()
+        / sw;
     let numer: f64 = w
         .iter()
         .zip(means.iter())
@@ -879,7 +882,13 @@ pub fn pearson_test(x: &[f64], y: &[f64], alpha: f64) -> Result<TestResult, Stri
     if r.is_nan() {
         return Err("いずれかの変数が一定のため相関を計算できません".to_string());
     }
-    Ok(correlation_result("Pearson相関の検定", r, x.len(), alpha, false))
+    Ok(correlation_result(
+        "Pearson相関の検定",
+        r,
+        x.len(),
+        alpha,
+        false,
+    ))
 }
 
 pub fn spearman_test(x: &[f64], y: &[f64], alpha: f64) -> Result<TestResult, String> {
@@ -892,7 +901,13 @@ pub fn spearman_test(x: &[f64], y: &[f64], alpha: f64) -> Result<TestResult, Str
     if r.is_nan() {
         return Err("いずれかの変数が一定のため相関を計算できません".to_string());
     }
-    Ok(correlation_result("Spearman順位相関の検定", r, x.len(), alpha, true))
+    Ok(correlation_result(
+        "Spearman順位相関の検定",
+        r,
+        x.len(),
+        alpha,
+        true,
+    ))
 }
 
 // ---------- Kendall順位相関 ----------
@@ -1245,7 +1260,7 @@ pub enum Correction {
 }
 
 impl Correction {
-    pub fn from_str(s: &str) -> Correction {
+    pub fn from_name(s: &str) -> Correction {
         match s.to_lowercase().as_str() {
             "bonferroni" => Correction::Bonferroni,
             "holm" => Correction::Holm,
@@ -1353,7 +1368,7 @@ mod tests {
         let fv = f_var_test(&a, &b, 0.05).unwrap();
         assert!(fv.p_value < 0.001);
         assert!(fv.statistic > 1.0); // va > vb
-        // 分散が同程度なら有意にならない
+                                     // 分散が同程度なら有意にならない
         let c = [1.0, 5.0, 9.0, 2.0, 8.0, 3.0, 7.0, 1.5, 8.5, 4.0];
         let lv2 = levene_test(&[a.to_vec(), c.to_vec()], 0.05).unwrap();
         assert!(lv2.p_value > 0.9);

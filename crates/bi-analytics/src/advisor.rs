@@ -101,7 +101,10 @@ pub fn advise_numeric_groups(
                 vec![opt("wilcoxon", "Wilcoxon符号付順位検定")],
             )
         } else {
-            reasons.push("残差の正規性に疑いがあるため、ノンパラメトリックを第一候補にしました。".to_string());
+            reasons.push(
+                "残差の正規性に疑いがあるため、ノンパラメトリックを第一候補にしました。"
+                    .to_string(),
+            );
             (
                 "wilcoxon",
                 "Wilcoxon符号付順位検定",
@@ -154,7 +157,8 @@ pub fn advise_numeric_groups(
             ("welch_t", "Welchのt検定", alt)
         };
         if !equal_var {
-            reasons.push("等分散の仮定が疑わしいため、等分散を仮定しない手法が安全です。".to_string());
+            reasons
+                .push("等分散の仮定が疑わしいため、等分散を仮定しない手法が安全です。".to_string());
         }
         return Ok(Recommendation {
             intent: "独立2群の差の検定".to_string(),
@@ -192,7 +196,9 @@ pub fn advise_numeric_groups(
             vec![opt("welch_anova", "Welchの分散分析")],
         )
     } else if equal_var {
-        reasons.push("等分散が棄却されなかったため、一元配置分散分析を第一候補にしました。".to_string());
+        reasons.push(
+            "等分散が棄却されなかったため、一元配置分散分析を第一候補にしました。".to_string(),
+        );
         (
             "anova",
             "一元配置分散分析 (ANOVA)",
@@ -209,7 +215,9 @@ pub fn advise_numeric_groups(
             vec![opt("kruskal", "Kruskal-Wallis検定")],
         )
     };
-    reasons.push(format!("{k}群の母平均(分布位置)が全て等しいかを検定します。"));
+    reasons.push(format!(
+        "{k}群の母平均(分布位置)が全て等しいかを検定します。"
+    ));
     Ok(Recommendation {
         intent: "3群以上の差の検定".to_string(),
         primary: primary.to_string(),
@@ -253,7 +261,8 @@ pub fn advise_one_sample(x: &[f64], mu0: f64) -> Result<Recommendation, String> 
             vec![opt("wilcoxon_1s", "Wilcoxon符号付順位検定(1標本)")],
         )
     } else {
-        reasons.push("正規性に疑いがあるため、ノンパラメトリックを第一候補にしました。".to_string());
+        reasons
+            .push("正規性に疑いがあるため、ノンパラメトリックを第一候補にしました。".to_string());
         (
             "wilcoxon_1s",
             "Wilcoxon符号付順位検定(1標本)",
@@ -285,7 +294,7 @@ pub fn advise_proportion(counts: &[(String, usize)]) -> Result<Recommendation, S
     let total: usize = counts.iter().map(|(_, c)| c).sum();
     // 件数の多い順に並べる(UIの既定選択が自然になる)
     let mut sorted: Vec<&(String, usize)> = counts.iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by_key(|x| std::cmp::Reverse(x.1));
     let summaries: Vec<GroupSummary> = sorted
         .iter()
         .map(|(l, c)| GroupSummary {
@@ -362,8 +371,9 @@ pub fn advise_two_numeric(x: &[f64], y: &[f64]) -> Result<Recommendation, String
     }
     let mut reasons = vec!["2つの数値変数の関連(相関)を検定します。".to_string()];
     if !both_normal {
-        reasons
-            .push("正規性に疑いがあるため、外れ値に頑健なSpearmanを第一候補にしました。".to_string());
+        reasons.push(
+            "正規性に疑いがあるため、外れ値に頑健なSpearmanを第一候補にしました。".to_string(),
+        );
     }
     let mut available = vec![
         opt("pearson", "Pearson相関の検定"),
@@ -393,12 +403,14 @@ pub fn advise_categorical(table: &[Vec<f64>]) -> Result<Recommendation, String> 
     }
     let cols = table[0].len();
     let row_sums: Vec<f64> = table.iter().map(|r| r.iter().sum()).collect();
-    let col_sums: Vec<f64> = (0..cols).map(|c| table.iter().map(|r| r[c]).sum()).collect();
+    let col_sums: Vec<f64> = (0..cols)
+        .map(|c| table.iter().map(|r| r[c]).sum())
+        .collect();
     let total: f64 = row_sums.iter().sum();
     let mut small = 0;
-    for i in 0..rows {
-        for j in 0..cols {
-            if row_sums[i] * col_sums[j] / total < 5.0 {
+    for &rs in &row_sums {
+        for &cs in &col_sums {
+            if rs * cs / total < 5.0 {
                 small += 1;
             }
         }
@@ -407,7 +419,8 @@ pub fn advise_categorical(table: &[Vec<f64>]) -> Result<Recommendation, String> 
     let mut warnings = vec![];
     let mut reasons = vec!["2つのカテゴリ変数の関連を検定します。".to_string()];
     let (primary, primary_label, alt) = if small > 0 && is_2x2 {
-        warnings.push("期待度数が小さいセルがあるため、Fisherの正確確率検定が適切です。".to_string());
+        warnings
+            .push("期待度数が小さいセルがあるため、Fisherの正確確率検定が適切です。".to_string());
         (
             "fisher",
             "Fisherの正確確率検定 (2×2)",

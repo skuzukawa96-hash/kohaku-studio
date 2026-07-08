@@ -404,11 +404,7 @@ fn value_label(v: &Value) -> String {
 const MAX_GROUPS: usize = 50;
 
 /// 数値目的変数をカテゴリ列で群分けする(出現順を保持、NaN/NULLは除外)。
-fn build_groups(
-    result: &QueryResult,
-    ti: usize,
-    gi: usize,
-) -> BiResult<Vec<(String, Vec<f64>)>> {
+fn build_groups(result: &QueryResult, ti: usize, gi: usize) -> BiResult<Vec<(String, Vec<f64>)>> {
     let tcol = col_f64(result, ti);
     let mut order: Vec<String> = vec![];
     let mut map: HashMap<String, Vec<f64>> = HashMap::new();
@@ -419,7 +415,9 @@ fn build_groups(
         let label = value_label(&row[gi]);
         if !map.contains_key(&label) {
             if order.len() >= MAX_GROUPS {
-                return Err(format!("群が多すぎます(最大{MAX_GROUPS}群)。群列を見直してください。"));
+                return Err(format!(
+                    "群が多すぎます(最大{MAX_GROUPS}群)。群列を見直してください。"
+                ));
             }
             order.push(label.clone());
         }
@@ -449,12 +447,11 @@ fn two_numeric_pairs(result: &QueryResult, xi: usize, yi: usize) -> (Vec<f64>, V
     (xs, ys)
 }
 
+/// クロス集計の結果: (行ラベル, 列ラベル, 度数表)
+type Contingency = (Vec<String>, Vec<String>, Vec<Vec<f64>>);
+
 /// 2カテゴリ列のクロス集計(度数表)を作る。
-fn contingency(
-    result: &QueryResult,
-    ri: usize,
-    ci: usize,
-) -> BiResult<(Vec<String>, Vec<String>, Vec<Vec<f64>>)> {
+fn contingency(result: &QueryResult, ri: usize, ci: usize) -> BiResult<Contingency> {
     let mut rlabels: Vec<String> = vec![];
     let mut clabels: Vec<String> = vec![];
     let mut counts: HashMap<(String, String), f64> = HashMap::new();
@@ -524,10 +521,13 @@ fn category_counts(result: &QueryResult, ci: usize) -> BiResult<Vec<(String, usi
         }
         *map.entry(label).or_insert(0) += 1;
     }
-    Ok(order.into_iter().map(|k| {
-        let c = map[&k];
-        (k, c)
-    }).collect())
+    Ok(order
+        .into_iter()
+        .map(|k| {
+            let c = map[&k];
+            (k, c)
+        })
+        .collect())
 }
 
 /// 基準比率 p0 (0〜1) を取得。
@@ -543,58 +543,57 @@ fn p0_of(req: &Json) -> BiResult<f64> {
 pub fn api_advise(state: &mut AppState, req: &Json) -> BiResult<Json> {
     let result = resolve_source(state, req)?;
     let mode = s(req, "mode");
-    let rec = match mode.as_str() {
-        "groups" => {
-            let ti = col_index(&result, &s(req, "target"))?;
-            let gi = col_index(&result, &s(req, "group"))?;
-            if !is_numeric_col(&result, ti) {
-                return Err("目的変数は数値列を選んでください".to_string());
+    let rec =
+        match mode.as_str() {
+            "groups" => {
+                let ti = col_index(&result, &s(req, "target"))?;
+                let gi = col_index(&result, &s(req, "group"))?;
+                if !is_numeric_col(&result, ti) {
+                    return Err("目的変数は数値列を選んでください".to_string());
+                }
+                let groups = build_groups(&result, ti, gi)?;
+                bi_analytics::advisor::advise_numeric_groups(&groups, false)?
             }
-            let groups = build_groups(&result, ti, gi)?;
-            bi_analytics::advisor::advise_numeric_groups(&groups, false)?
-        }
-        "two_numeric" => {
-            let xi = col_index(&result, &s(req, "x"))?;
-            let yi = col_index(&result, &s(req, "y"))?;
-            if !is_numeric_col(&result, xi) || !is_numeric_col(&result, yi) {
-                return Err("2つとも数値列を選んでください".to_string());
+            "two_numeric" => {
+                let xi = col_index(&result, &s(req, "x"))?;
+                let yi = col_index(&result, &s(req, "y"))?;
+                if !is_numeric_col(&result, xi) || !is_numeric_col(&result, yi) {
+                    return Err("2つとも数値列を選んでください".to_string());
+                }
+                let (xs, ys) = two_numeric_pairs(&result, xi, yi);
+                let paired = req.get("paired").and_then(|x| x.as_bool()).unwrap_or(false);
+                if paired {
+                    let groups = vec![("測定1".to_string(), xs), ("測定2".to_string(), ys)];
+                    bi_analytics::advisor::advise_numeric_groups(&groups, true)?
+                } else {
+                    bi_analytics::advisor::advise_two_numeric(&xs, &ys)?
+                }
             }
-            let (xs, ys) = two_numeric_pairs(&result, xi, yi);
-            let paired = req.get("paired").and_then(|x| x.as_bool()).unwrap_or(false);
-            if paired {
-                let groups = vec![("測定1".to_string(), xs), ("測定2".to_string(), ys)];
-                bi_analytics::advisor::advise_numeric_groups(&groups, true)?
-            } else {
-                bi_analytics::advisor::advise_two_numeric(&xs, &ys)?
+            "categorical" => {
+                let ri = col_index(&result, &s(req, "row"))?;
+                let ci = col_index(&result, &s(req, "col"))?;
+                let (_rl, _cl, table) = contingency(&result, ri, ci)?;
+                bi_analytics::advisor::advise_categorical(&table)?
             }
-        }
-        "categorical" => {
-            let ri = col_index(&result, &s(req, "row"))?;
-            let ci = col_index(&result, &s(req, "col"))?;
-            let (_rl, _cl, table) = contingency(&result, ri, ci)?;
-            bi_analytics::advisor::advise_categorical(&table)?
-        }
-        "one_sample" => {
-            let ti = col_index(&result, &s(req, "target"))?;
-            if !is_numeric_col(&result, ti) {
-                return Err("対象は数値列を選んでください".to_string());
+            "one_sample" => {
+                let ti = col_index(&result, &s(req, "target"))?;
+                if !is_numeric_col(&result, ti) {
+                    return Err("対象は数値列を選んでください".to_string());
+                }
+                let xs = col_finite(&result, ti);
+                let mu0 = req.get("mu0").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                bi_analytics::advisor::advise_one_sample(&xs, mu0)?
             }
-            let xs = col_finite(&result, ti);
-            let mu0 = req.get("mu0").and_then(|x| x.as_f64()).unwrap_or(0.0);
-            bi_analytics::advisor::advise_one_sample(&xs, mu0)?
-        }
-        "proportion" => {
-            let ci = col_index(&result, &s(req, "column"))?;
-            let counts = category_counts(&result, ci)?;
-            bi_analytics::advisor::advise_proportion(&counts)?
-        }
-        _ => {
-            return Err(
+            "proportion" => {
+                let ci = col_index(&result, &s(req, "column"))?;
+                let counts = category_counts(&result, ci)?;
+                bi_analytics::advisor::advise_proportion(&counts)?
+            }
+            _ => return Err(
                 "mode は groups / two_numeric / categorical / one_sample / proportion のいずれか"
                     .to_string(),
-            )
-        }
-    };
+            ),
+        };
     serde_json::to_value(&rec).map_err(|e| e.to_string())
 }
 
@@ -648,9 +647,13 @@ fn run_named_test(
             let (_rl, _cl, table) = contingency(result, ri, ci)?;
             match id {
                 "chi_square" => htest::chi_square_independence(&table, alpha),
-                "fisher" if table.len() == 2 && table[0].len() == 2 => {
-                    htest::fisher_exact_2x2(table[0][0], table[0][1], table[1][0], table[1][1], alpha)
-                }
+                "fisher" if table.len() == 2 && table[0].len() == 2 => htest::fisher_exact_2x2(
+                    table[0][0],
+                    table[0][1],
+                    table[1][0],
+                    table[1][1],
+                    alpha,
+                ),
                 _ => Err("Fisher検定は2×2表のみ対応です".to_string()),
             }
         }
@@ -766,7 +769,7 @@ pub fn api_test(state: &mut AppState, req: &Json) -> BiResult<Json> {
         return Err("検定を選択してください".to_string());
     }
     let res = run_named_test(&id, &result, req, alpha)?;
-    let correction = Correction::from_str(&s(req, "correction"));
+    let correction = Correction::from_name(&s(req, "correction"));
 
     // 3群以上で分散分析/Kruskalが有意なら、事後のペアワイズ比較を付ける
     let posthoc = if matches!(id.as_str(), "anova" | "welch_anova" | "kruskal") {

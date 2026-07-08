@@ -5,6 +5,8 @@ use std::f64::consts::PI;
 
 /// 対数ガンマ関数(Lanczos近似, g=7)。
 pub fn ln_gamma(x: f64) -> f64 {
+    // Lanczos係数は公表値をそのまま用いる(桁は意図的)
+    #[allow(clippy::excessive_precision)]
     const C: [f64; 9] = [
         0.999_999_999_999_809_93,
         676.520_368_121_885_1,
@@ -185,6 +187,8 @@ pub fn normal_ppf(p: f64) -> f64 {
     if p >= 1.0 {
         return f64::INFINITY;
     }
+    // Acklam の逆正規CDF近似係数(公表値、桁は意図的)
+    #[allow(clippy::excessive_precision)]
     const A: [f64; 6] = [
         -3.969_683_028_665_376e1,
         2.209_460_984_245_205e2,
