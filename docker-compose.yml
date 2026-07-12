@@ -1,0 +1,48 @@
+# Kohaku Studio 開発用DB(使い捨て)
+#
+#   両方起動:      docker compose up -d
+#   片方だけ:      docker compose up -d postgres   (または mysql)
+#   停止:          docker compose down             (データも消す: down -v)
+#
+# 低スペックPC向けにメモリを絞っている。接続情報は docs/DEMO.md 参照。
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: kohaku-postgres
+    environment:
+      POSTGRES_USER: kohaku
+      POSTGRES_PASSWORD: kohaku
+      POSTGRES_DB: demo
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kohaku -d demo"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  mysql:
+    image: mysql:8.0
+    container_name: kohaku-mysql
+    command: >-
+      --performance-schema=OFF
+      --innodb-buffer-pool-size=64M
+      --max-connections=20
+    environment:
+      MYSQL_ROOT_PASSWORD: kohaku
+      MYSQL_USER: kohaku
+      MYSQL_PASSWORD: kohaku
+      MYSQL_DATABASE: demo
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./docker/mysql-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-ukohaku", "-pkohaku"]
+      interval: 3s
+      timeout: 3s
+      retries: 30

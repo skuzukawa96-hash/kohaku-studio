@@ -9,3 +9,15 @@ csv = "1"
 calamine = "0.26"
 rusqlite = { workspace = true }
 encoding_rs = "0.8"
+# PostgreSQL / MySQL コネクタ(v0.2)。TLSはrustls(証明書はOS由来)
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-ring",
+    "postgres",
+    "mysql",
+    "chrono",
+    "rust_decimal",
+] }
+tokio = { version = "1", default-features = false, features = ["rt"] }
+chrono = { version = "0.4", default-features = false }
+rust_decimal = { version = "1", default-features = false }
