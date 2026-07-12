@@ -232,12 +232,26 @@
       <button class="close" data-close="import-modal">✕</button>
     </div>
     <div class="modal-body">
-      <div class="browse-bar">
-        <input id="imp-path" placeholder="フォルダパス">
-        <button id="imp-go">移動</button>
+      <nav class="subtabs">
+        <button id="imp-tab-file" class="subtab active">📁 ファイル</button>
+        <button id="imp-tab-db" class="subtab">🗄 データベース</button>
+      </nav>
+      <div id="imp-file-panel">
+        <div class="browse-bar">
+          <input id="imp-path" placeholder="フォルダパス">
+          <button id="imp-go">移動</button>
+        </div>
+        <div id="imp-browser">
+          <ul id="imp-entries"></ul>
+        </div>
       </div>
-      <div id="imp-browser">
-        <ul id="imp-entries"></ul>
+      <div id="imp-db-panel" class="hidden">
+        <div class="browse-bar">
+          <input id="imp-db-url" placeholder="postgres://user:pass@localhost:5432/db または mysql://...">
+          <button id="imp-db-connect" class="primary">接続</button>
+        </div>
+        <div class="hint">対応: PostgreSQL / MySQL / MariaDB。接続URLはプロジェクトファイルに平文で保存されるため、読み取り専用ユーザーの使用を推奨します。</div>
+        <div id="imp-db-msg" class="hint"></div>
       </div>
       <div id="imp-config" class="hidden">
         <div class="imp-row">

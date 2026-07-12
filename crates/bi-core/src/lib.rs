@@ -107,6 +107,11 @@ pub trait Connector: Send + Sync {
     fn connector_type(&self) -> &'static str;
     /// 対応する拡張子(小文字)
     fn extensions(&self) -> &'static [&'static str];
+    /// 対応するURLスキーム(例: "postgres")。DB系コネクタが実装する。
+    /// ファイル系コネクタは既定の空のままでよい。
+    fn schemes(&self) -> &'static [&'static str] {
+        &[]
+    }
     /// ソース内のオブジェクト一覧(Excelならシート、DBならテーブル)
     fn list_objects(&self, path: &Path) -> BiResult<Vec<String>>;
     /// オブジェクトを TableData として読み込む

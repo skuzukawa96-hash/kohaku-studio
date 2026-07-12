@@ -251,10 +251,12 @@ fn api_browse(state: &AppState, req: &Json) -> BiResult<Json> {
 }
 
 fn connector_for<'a>(state: &'a AppState, path: &Path) -> BiResult<&'a dyn Connector> {
-    state
-        .registry
-        .for_path(path)
-        .ok_or_else(|| format!("未対応のファイル形式です: {}", path.display()))
+    state.registry.for_path(path).ok_or_else(|| {
+        format!(
+            "未対応のファイル形式・接続URLです: {}(対応スキーム: postgres:// mysql://)",
+            path.display()
+        )
+    })
 }
 
 fn api_objects(state: &AppState, req: &Json) -> BiResult<Json> {

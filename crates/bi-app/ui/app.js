@@ -90,13 +90,18 @@ async function refreshState() {
   renderHistory(st.queries || []);
 }
 
+/** 表示用: 接続URLのパスワード部分を伏せる */
+function maskSecret(p) {
+  return String(p).replace(/^(\w+:\/\/[^:/@]+):[^@]+@/, "$1:••••@");
+}
+
 function renderSidebar() {
   const ul = $("dataset-list");
   ul.innerHTML = "";
   for (const d of datasets) {
     const li = document.createElement("li");
     li.classList.toggle("active", d.name === currentDataset);
-    li.innerHTML = `<span class="ds-name" title="${esc(d.path)}">${esc(d.name)}</span>
+    li.innerHTML = `<span class="ds-name" title="${esc(maskSecret(d.path))}">${esc(d.name)}</span>
       <span class="ds-rows">${(d.row_count || 0).toLocaleString()}行</span>
       <button class="ds-del" title="削除">✕</button>`;
     li.querySelector(".ds-name").onclick = () => showDataset(d.name);
@@ -142,7 +147,58 @@ function openImport() {
   $("imp-config").classList.add("hidden");
   $("imp-msg").textContent = "";
   $("imp-preview").innerHTML = "";
+  $("imp-db-url").value = localStorage.getItem("kohaku.lastDbUrl") || "";
+  impMode(localStorage.getItem("kohaku.impMode") || "file");
   browse(localStorage.getItem("kohaku.lastDir") || "");
+}
+
+/** インポート元の切替: ファイル / データベース */
+function impMode(mode) {
+  localStorage.setItem("kohaku.impMode", mode);
+  $("imp-tab-file").classList.toggle("active", mode === "file");
+  $("imp-tab-db").classList.toggle("active", mode === "db");
+  $("imp-file-panel").classList.toggle("hidden", mode !== "file");
+  $("imp-db-panel").classList.toggle("hidden", mode !== "db");
+  $("imp-config").classList.add("hidden");
+  $("imp-db-msg").textContent = "";
+  $("imp-preview").innerHTML = "";
+  $("imp-msg").textContent = "";
+}
+
+/** DB接続URLからテーブル一覧を取得してインポート設定を表示する */
+async function connectDb() {
+  const url = $("imp-db-url").value.trim();
+  if (!url) {
+    $("imp-db-msg").textContent = "接続URLを入力してください";
+    return;
+  }
+  $("imp-db-msg").textContent = "接続中...";
+  try {
+    const r = await api("/api/objects", { path: url });
+    if (!r.objects.length) {
+      $("imp-db-msg").textContent = "テーブルが見つかりません(スキーマ・権限を確認してください)";
+      return;
+    }
+    localStorage.setItem("kohaku.lastDbUrl", url);
+    imp.path = url;
+    imp.connector = r.connector;
+    imp.objects = r.objects;
+    const sel = $("imp-object");
+    sel.innerHTML = "";
+    for (const o of r.objects) {
+      const op = document.createElement("option");
+      op.value = o;
+      op.textContent = o;
+      sel.appendChild(op);
+    }
+    $("imp-delim-row").classList.add("hidden");
+    $("imp-name").value = sanitizeName(r.objects[0]);
+    $("imp-db-msg").textContent = `${r.connector} に接続しました(${r.objects.length}テーブル)`;
+    $("imp-config").classList.remove("hidden");
+    await refreshImportPreview();
+  } catch (err) {
+    $("imp-db-msg").textContent = err.message;
+  }
 }
 
 async function browse(path) {
@@ -1388,10 +1444,16 @@ function init() {
   $("btn-import").onclick = openImport;
   $("imp-go").onclick = () => browse($("imp-path").value);
   $("imp-path").addEventListener("keydown", (e) => { if (e.key === "Enter") browse($("imp-path").value); });
+  $("imp-tab-file").onclick = () => impMode("file");
+  $("imp-tab-db").onclick = () => impMode("db");
+  $("imp-db-connect").onclick = connectDb;
+  $("imp-db-url").addEventListener("keydown", (e) => { if (e.key === "Enter") connectDb(); });
   $("imp-object").onchange = () => {
     if (imp.connector === "excel" && imp.objects.length > 1) {
       const stem = imp.path.split("\\").pop().replace(/\.[^.]+$/, "");
       $("imp-name").value = sanitizeName(stem + "_" + $("imp-object").value);
+    } else if (imp.connector === "postgres" || imp.connector === "mysql") {
+      $("imp-name").value = sanitizeName($("imp-object").value);
     }
     refreshImportPreview();
   };
@@ -1430,11 +1492,11 @@ function init() {
     renderChartList();
   };
 
-  // 分析タブ
-  document.querySelectorAll(".subtab").forEach((t) => {
+  // 分析タブ(インポートモーダル等の他の .subtab を巻き込まないよう分析タブ内に限定)
+  document.querySelectorAll("#tab-analytics .subtab").forEach((t) => {
     t.onclick = () => {
-      document.querySelectorAll(".subtab").forEach((x) => x.classList.toggle("active", x === t));
-      document.querySelectorAll(".subpane").forEach((p) => p.classList.toggle("active", p.id === t.dataset.sub));
+      document.querySelectorAll("#tab-analytics .subtab").forEach((x) => x.classList.toggle("active", x === t));
+      document.querySelectorAll("#tab-analytics .subpane").forEach((p) => p.classList.toggle("active", p.id === t.dataset.sub));
     };
   });
   $("an-source-kind").onchange = () => {

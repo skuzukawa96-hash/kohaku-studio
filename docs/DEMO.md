@@ -48,6 +48,36 @@ kohaku-studio --make-samples ./samples
 
 9. **保存** — 「💾 保存」でプロジェクトを `.kohaku` ファイルに保存。次回は「📂 開く」で復元
 
+## データベース接続を試す（PostgreSQL / MySQL）
+
+開発用の使い捨てDBを Docker で起動できます（[Docker](https://www.docker.com/) が必要）。
+
+```bash
+docker compose up -d              # PostgreSQL と MySQL を起動
+docker compose up -d postgres     # 片方だけ起動する場合
+```
+
+起動後、「＋ インポート」→「🗄 データベース」タブで接続URLを入力して「接続」:
+
+| DB | 接続URL |
+| --- | --- |
+| PostgreSQL | `postgres://kohaku:kohaku@localhost:5432/demo` |
+| MySQL | `mysql://kohaku:kohaku@localhost:3306/demo` |
+
+`sales` / `customers` テーブルが見えるので、選択してプレビュー → 取り込み。
+以降はファイル由来のデータと同じく SQL・チャート・分析で扱えます。
+
+停止・後片付け:
+
+```bash
+docker compose down       # 停止（データは次回も残る）
+docker compose down -v    # データも削除して完全リセット
+```
+
+> 接続URLはプロジェクト（`.kohaku`）に平文で保存されます。共有する環境では
+> 読み取り専用ユーザーを使ってください。クラウドの無料枠（Neon など）の
+> 接続URLでも同様に接続できます。
+
 ## タブのディープリンク
 
 URLのハッシュでタブを直接開けます（ブックマークや共有に便利）。

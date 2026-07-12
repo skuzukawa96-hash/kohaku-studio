@@ -2,10 +2,12 @@
 //! 新しい形式への対応は Connector trait を実装し registry に登録するだけでよい。
 
 mod csv_conn;
+mod db_conn;
 mod excel_conn;
 mod sqlite_conn;
 
 pub use csv_conn::CsvConnector;
+pub use db_conn::{MySqlConnector, PostgresConnector};
 pub use excel_conn::ExcelConnector;
 pub use sqlite_conn::SqliteConnector;
 
@@ -30,6 +32,8 @@ impl ConnectorRegistry {
                 Box::new(CsvConnector),
                 Box::new(ExcelConnector),
                 Box::new(SqliteConnector),
+                Box::new(PostgresConnector),
+                Box::new(MySqlConnector),
             ],
         }
     }
@@ -39,6 +43,17 @@ impl ConnectorRegistry {
     }
 
     pub fn for_path(&self, path: &Path) -> Option<&dyn Connector> {
+        // 接続URL(scheme://...)はスキームで解決する
+        let s = path.to_string_lossy();
+        if let Some((scheme, _)) = s.split_once("://") {
+            let scheme = scheme.to_lowercase();
+            return self
+                .connectors
+                .iter()
+                .find(|c| c.schemes().contains(&scheme.as_str()))
+                .map(|c| c.as_ref());
+        }
+        // ファイルは拡張子で解決する
         let ext = path.extension()?.to_str()?.to_lowercase();
         self.connectors
             .iter()
