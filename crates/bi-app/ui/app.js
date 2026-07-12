@@ -372,6 +372,7 @@ function chartSpecFromForm() {
       : { kind: "sql", sql: $("ch-sql").value.trim() },
     x: $("ch-x").value,
     y: $("ch-y").value,
+    series: $("ch-series").value,
     agg: $("ch-agg").value,
     bins: parseInt($("ch-bins").value, 10) || 20,
   };
@@ -389,6 +390,7 @@ function loadChartToForm(spec) {
   loadChartColumns().then(() => {
     $("ch-x").value = spec.x || "";
     $("ch-y").value = spec.y || "";
+    $("ch-series").value = spec.series || "";
     $("ch-agg").value = spec.agg || "none";
     $("ch-bins").value = spec.bins || 20;
     previewChart();
@@ -404,6 +406,7 @@ function updateChartFormVisibility() {
   $("ch-bins-row").classList.toggle("hidden", type !== "histogram");
   $("ch-y-row").classList.toggle("hidden", type === "histogram" || type === "table");
   $("ch-x-row").classList.toggle("hidden", type === "table");
+  $("ch-series-row").classList.toggle("hidden", type === "histogram" || type === "table");
   $("ch-agg-row").classList.toggle("hidden", type === "histogram" || type === "table" || type === "scatter");
 }
 
@@ -447,10 +450,17 @@ async function loadChartColumns() {
   } catch (e) {
     /* SQL未完成時は無視 */
   }
-  for (const id of ["ch-x", "ch-y"]) {
+  for (const id of ["ch-x", "ch-y", "ch-series"]) {
     const sel = $(id);
     const cur = sel.value;
     sel.innerHTML = "";
+    if (id === "ch-series") {
+      // 系列は任意指定(既定は単一系列)
+      const none = document.createElement("option");
+      none.value = "";
+      none.textContent = "(なし)";
+      sel.appendChild(none);
+    }
     for (const c of cols) {
       const op = document.createElement("option");
       op.value = c;
@@ -464,19 +474,22 @@ async function loadChartColumns() {
 function buildChartQuery(spec) {
   const base = chartBaseSql(spec);
   const x = qi(spec.x), y = qi(spec.y);
+  // 系列列(任意)。指定時は s 列としてSELECTに含める
+  const s = spec.series ? `, ${qi(spec.series)} AS s` : "";
   switch (spec.chart_type) {
     case "table":
       return `SELECT * FROM (${base}) LIMIT 500`;
     case "histogram":
       return `SELECT ${x} AS x FROM (${base}) WHERE ${x} IS NOT NULL LIMIT 100000`;
     case "scatter":
-      return `SELECT ${x} AS x, ${y} AS y FROM (${base}) WHERE ${x} IS NOT NULL AND ${y} IS NOT NULL LIMIT 20000`;
+      return `SELECT ${x} AS x, ${y} AS y${s} FROM (${base}) WHERE ${x} IS NOT NULL AND ${y} IS NOT NULL LIMIT 20000`;
     default: {
       if (spec.agg === "none") {
-        return `SELECT ${x} AS x, ${y} AS y FROM (${base}) LIMIT 20000`;
+        return `SELECT ${x} AS x, ${y} AS y${s} FROM (${base}) LIMIT 20000`;
       }
       const agg = spec.agg === "count" ? "COUNT(*)" : `${spec.agg.toUpperCase()}(${y})`;
-      return `SELECT ${x} AS x, ${agg} AS y FROM (${base}) GROUP BY ${x} ORDER BY ${x} LIMIT 2000`;
+      const grp = spec.series ? `${x}, ${qi(spec.series)}` : x;
+      return `SELECT ${x} AS x, ${agg} AS y${s} FROM (${base}) GROUP BY ${grp} ORDER BY ${x} LIMIT 4000`;
     }
   }
 }
@@ -570,6 +583,11 @@ function niceTicks(min, max, count) {
   const ticks = [];
   let t = Math.ceil(min / step) * step;
   for (; t <= max + step * 1e-9; t += step) ticks.push(Math.round(t * 1e9) / 1e9);
+  // 最終目盛りがデータ最大値を下回るとプロットが枠からはみ出すため、1段追加して覆う
+  if (!ticks.length || ticks[ticks.length - 1] < max - step * 1e-9) {
+    const base = ticks.length ? ticks[ticks.length - 1] : Math.floor(min / step) * step;
+    ticks.push(Math.round((base + step) * 1e9) / 1e9);
+  }
   return ticks;
 }
 
@@ -579,13 +597,94 @@ function fmtTick(v) {
   return String(Math.round(v * 1000) / 1000);
 }
 
+/** 系列の色パレット(最大8系列) */
+const SERIES_COLORS = ["#4f8ef7", "#58c9a4", "#e0a15c", "#e06c75", "#b478e0", "#5cd0e0", "#e0d05c", "#8a94e0"];
+
+/** Y軸ラベル: 何をプロットしているかを常に明示する */
+function chartYLabel(spec) {
+  if (spec.chart_type === "histogram") return "度数";
+  // 散布図は集計しない(フォームに残った集計値を無視する)
+  if (spec.chart_type === "scatter") return spec.y || "";
+  if (spec.agg === "count") return "件数";
+  if (spec.agg && spec.agg !== "none") {
+    const names = { sum: "合計", avg: "平均", min: "最小", max: "最大" };
+    return `${names[spec.agg] || spec.agg}(${spec.y})`;
+  }
+  return spec.y || "";
+}
+
 function renderChart(canvas, spec, result) {
   const { ctx, w, h } = setupCanvas(canvas);
   const xi = result.columns.indexOf("x");
   const yi = result.columns.indexOf("y");
+  const si = result.columns.indexOf("s");
   const C = CHART_COLORS;
-  const m = { l: 58, r: 16, t: 14, b: 52 };
+
+  // 系列分解(s列がなければ全行を単一系列として扱う)
+  const MAX_SERIES = 8;
+  const notes = [];
+  let seriesNames = [];
+  const bySeries = new Map();
+  if (si >= 0) {
+    for (const r of result.rows) {
+      const name = r[si] === null ? "(null)" : String(r[si]);
+      if (!bySeries.has(name)) {
+        bySeries.set(name, []);
+        seriesNames.push(name);
+      }
+      bySeries.get(name).push(r);
+    }
+    if (seriesNames.length > MAX_SERIES) {
+      notes.push(`${seriesNames.length}系列中 先頭${MAX_SERIES}系列を表示`);
+      seriesNames = seriesNames.slice(0, MAX_SERIES);
+    }
+  } else {
+    seriesNames = [""];
+    bySeries.set("", result.rows);
+  }
+  const hasLegend = si >= 0 && seriesNames.length > 1;
+  const color = (k) => (si >= 0 ? SERIES_COLORS[k % SERIES_COLORS.length] : C.accent);
+
+  const yLabel = chartYLabel(spec);
+  const m = { l: 58 + (yLabel ? 16 : 0), r: 16, t: hasLegend ? 34 : 14, b: 52 };
   const pw = w - m.l - m.r, ph = h - m.t - m.b;
+
+  const drawYLabel = () => {
+    if (!yLabel) return;
+    ctx.save();
+    ctx.fillStyle = C.text;
+    ctx.translate(14, m.t + ph / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(yLabel.length > 24 ? yLabel.slice(0, 24) + "…" : yLabel, 0, 0);
+    ctx.restore();
+  };
+
+  const drawLegend = () => {
+    if (!hasLegend) return;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    let lx = m.l;
+    for (let k = 0; k < seriesNames.length; k++) {
+      const lb = seriesNames[k].length > 16 ? seriesNames[k].slice(0, 16) + "…" : seriesNames[k];
+      const need = 14 + ctx.measureText(lb).width + 16;
+      if (lx + need > w - m.r) break; // 幅に収まらない分は省略
+      ctx.fillStyle = color(k);
+      ctx.fillRect(lx, 10, 10, 10);
+      ctx.fillStyle = C.text;
+      ctx.fillText(lb, lx + 14, 15);
+      lx += need;
+    }
+  };
+
+  const drawNotes = () => {
+    if (!notes.length) return;
+    ctx.fillStyle = C.text;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "top";
+    ctx.fillText(notes.join(" / "), w - m.r, hasLegend ? 24 : 2);
+  };
 
   const drawAxes = (yTicks, yMin, yMax) => {
     ctx.strokeStyle = C.grid;
@@ -642,45 +741,66 @@ function renderChart(canvas, spec, result) {
       if (xx >= m.l - 1 && xx <= w - m.r + 1) ctx.fillText(fmtTick(t), xx, m.t + ph + 6);
     }
     ctx.fillText(spec.x, m.l + pw / 2, h - 16);
+    drawYLabel();
     return;
   }
 
   if (xi < 0 || yi < 0 || !result.rows.length) return noData();
-  let rows = result.rows.filter((r) => r[yi] !== null);
 
   if (spec.chart_type === "scatter" || spec.chart_type === "line") {
-    const xNumeric = rows.every((r) => typeof r[xi] === "number");
-    let pts;
-    if (xNumeric) {
-      pts = rows.map((r) => [Number(r[xi]), Number(r[yi])]).filter((p) => isFinite(p[0]) && isFinite(p[1]));
-      pts.sort((a, b) => a[0] - b[0]);
-    } else {
-      pts = rows.map((r, i) => [i, Number(r[yi])]).filter((p) => isFinite(p[1]));
+    const allRows = seriesNames.flatMap((n) => bySeries.get(n)).filter((r) => r[yi] !== null);
+    if (!allRows.length) return noData();
+    const xNumeric = allRows.every((r) => typeof r[xi] === "number");
+    // カテゴリXは全系列共通の出現順インデックスに揃える
+    const catIndex = new Map();
+    const catLabels = [];
+    if (!xNumeric) {
+      for (const r of allRows) {
+        const cx = String(r[xi]);
+        if (!catIndex.has(cx)) {
+          catIndex.set(cx, catIndex.size);
+          catLabels.push(cx);
+        }
+      }
     }
-    if (!pts.length) return noData();
-    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+    const seriesPts = seriesNames.map((n) =>
+      bySeries
+        .get(n)
+        .filter((r) => r[yi] !== null)
+        .map((r) => [xNumeric ? Number(r[xi]) : catIndex.get(String(r[xi])), Number(r[yi])])
+        .filter((p) => isFinite(p[0]) && isFinite(p[1]))
+        .sort((a, b) => a[0] - b[0])
+    );
+    const flat = seriesPts.flat();
+    if (!flat.length) return noData();
+    const xs = flat.map((p) => p[0]), ys = flat.map((p) => p[1]);
     const xMin = Math.min(...xs), xMax = Math.max(...xs);
     const yTicks = niceTicks(Math.min(0, Math.min(...ys)), Math.max(...ys), 5);
     const yMin = yTicks[0], yMax = yTicks[yTicks.length - 1];
     drawAxes(yTicks, yMin, yMax);
     const px = (x) => m.l + ((x - xMin) / ((xMax - xMin) || 1)) * pw;
     const py = (y) => m.t + ph - ((y - yMin) / ((yMax - yMin) || 1)) * ph;
-    if (spec.chart_type === "line") {
-      ctx.strokeStyle = C.accent;
-      ctx.lineWidth = 1.6;
-      ctx.beginPath();
-      pts.forEach((p, i) => (i ? ctx.lineTo(px(p[0]), py(p[1])) : ctx.moveTo(px(p[0]), py(p[1]))));
-      ctx.stroke();
-    }
-    ctx.fillStyle = spec.chart_type === "line" ? C.accent : "rgba(79,142,247,0.65)";
-    const rad = spec.chart_type === "line" ? (pts.length > 200 ? 0 : 2.5) : Math.max(1.5, 4 - Math.log10(pts.length + 1));
-    if (rad > 0) {
-      for (const p of pts) {
+    const rad = spec.chart_type === "line" ? (flat.length > 200 ? 0 : 2.5) : Math.max(1.5, 4 - Math.log10(flat.length + 1));
+    seriesPts.forEach((pts, k) => {
+      const col = color(k);
+      if (spec.chart_type === "line") {
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1.6;
         ctx.beginPath();
-        ctx.arc(px(p[0]), py(p[1]), rad, 0, Math.PI * 2);
-        ctx.fill();
+        pts.forEach((p, i) => (i ? ctx.lineTo(px(p[0]), py(p[1])) : ctx.moveTo(px(p[0]), py(p[1]))));
+        ctx.stroke();
       }
-    }
+      if (rad > 0) {
+        ctx.fillStyle = col;
+        ctx.globalAlpha = spec.chart_type === "line" ? 1 : 0.65;
+        for (const p of pts) {
+          ctx.beginPath();
+          ctx.arc(px(p[0]), py(p[1]), rad, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+      }
+    });
     // X軸
     ctx.fillStyle = C.text;
     ctx.textAlign = "center";
@@ -691,44 +811,78 @@ function renderChart(canvas, spec, result) {
         if (xx >= m.l - 1 && xx <= w - m.r + 1) ctx.fillText(fmtTick(t), xx, m.t + ph + 6);
       }
     } else {
-      const labels = rows.map((r) => String(r[xi]));
-      const stepN = Math.ceil(labels.length / 10);
-      labels.forEach((lb, i) => {
-        if (i % stepN === 0) ctx.fillText(lb.length > 12 ? lb.slice(0, 12) + "…" : lb, px(i), m.t + ph + 6);
+      // ラベル幅から重ならずに置ける個数を求めて間引く
+      const shown = catLabels.map((lb) => (lb.length > 12 ? lb.slice(0, 12) + "…" : lb));
+      const wMax = Math.max(...shown.map((lb) => ctx.measureText(lb).width), 1);
+      const maxFit = Math.max(1, Math.floor(pw / (wMax + 12)));
+      const stepN = Math.ceil(catLabels.length / maxFit);
+      shown.forEach((lb, i) => {
+        if (i % stepN === 0) ctx.fillText(lb, px(i), m.t + ph + 6);
       });
     }
     ctx.fillText(spec.x, m.l + pw / 2, h - 16);
+    drawYLabel();
+    drawLegend();
+    drawNotes();
     return;
   }
 
-  // 棒グラフ(カテゴリ)
+  // 棒グラフ(カテゴリ × 系列 → グループ棒)
   const MAX_BARS = 60;
-  let note = "";
-  if (rows.length > MAX_BARS) {
-    note = `${rows.length}カテゴリ中 先頭${MAX_BARS}件を表示`;
-    rows = rows.slice(0, MAX_BARS);
+  // カテゴリ軸は全系列共通(クエリのORDER BY x順で採番)
+  let cats = [];
+  const seen = new Set();
+  for (const r of result.rows) {
+    if (r[yi] === null) continue;
+    const cx = String(r[xi]);
+    if (!seen.has(cx)) {
+      seen.add(cx);
+      cats.push(cx);
+    }
   }
-  const cats = rows.map((r) => String(r[xi]));
-  const ys = rows.map((r) => Number(r[yi]));
-  if (!ys.length) return noData();
-  const yTicks = niceTicks(Math.min(0, Math.min(...ys)), Math.max(0, Math.max(...ys)), 5);
+  if (!cats.length) return noData();
+  if (cats.length > MAX_BARS) {
+    notes.push(`${cats.length}カテゴリ中 先頭${MAX_BARS}件を表示`);
+    cats = cats.slice(0, MAX_BARS);
+  }
+  const catPos = new Map(cats.map((c, i) => [c, i]));
+  // 系列ごとの カテゴリ→値 表(同一キー重複は後勝ち)
+  const vals = seriesNames.map((n) => {
+    const mp = new Map();
+    for (const r of bySeries.get(n)) {
+      if (r[yi] === null) continue;
+      const v = Number(r[yi]);
+      if (isFinite(v) && catPos.has(String(r[xi]))) mp.set(String(r[xi]), v);
+    }
+    return mp;
+  });
+  const allVals = vals.flatMap((mp) => [...mp.values()]);
+  if (!allVals.length) return noData();
+  const yTicks = niceTicks(Math.min(0, Math.min(...allVals)), Math.max(0, Math.max(...allVals)), 5);
   const yMin = yTicks[0], yMax = yTicks[yTicks.length - 1];
   drawAxes(yTicks, yMin, yMax);
   const py = (y) => m.t + ph - ((y - yMin) / ((yMax - yMin) || 1)) * ph;
-  const bw = pw / cats.length;
-  ctx.fillStyle = C.accent;
-  cats.forEach((_, i) => {
-    const v = ys[i];
-    const x0 = m.l + i * bw + bw * 0.12;
-    const y0 = py(Math.max(0, v));
-    const hh = Math.abs(py(v) - py(0));
-    ctx.fillRect(x0, v >= 0 ? y0 : py(0), bw * 0.76, Math.max(1, hh));
+  const groupW = pw / cats.length;
+  const inner = groupW * 0.76;
+  const barW = inner / seriesNames.length;
+  seriesNames.forEach((n, k) => {
+    ctx.fillStyle = color(k);
+    const mp = vals[k];
+    cats.forEach((c, i) => {
+      if (!mp.has(c)) return;
+      const v = mp.get(c);
+      const x0 = m.l + i * groupW + groupW * 0.12 + k * barW;
+      const y0 = py(Math.max(0, v));
+      const hh = Math.abs(py(v) - py(0));
+      const bw = Math.max(1, barW - (seriesNames.length > 1 ? 1 : 0));
+      ctx.fillRect(x0, v >= 0 ? y0 : py(0), bw, Math.max(1, hh));
+    });
   });
   // カテゴリラベル
   ctx.fillStyle = C.text;
   const rotate = cats.length > 8 || cats.some((c) => c.length > 6);
   cats.forEach((c, i) => {
-    const cx = m.l + i * bw + bw / 2;
+    const cx = m.l + i * groupW + groupW / 2;
     const label = c.length > 14 ? c.slice(0, 14) + "…" : c;
     const stepN = Math.ceil(cats.length / (rotate ? 30 : 15));
     if (i % stepN !== 0) return;
@@ -745,11 +899,9 @@ function renderChart(canvas, spec, result) {
     ctx.fillText(label, 0, 0);
     ctx.restore();
   });
-  if (note) {
-    ctx.textAlign = "right";
-    ctx.textBaseline = "top";
-    ctx.fillText(note, w - m.r, 2);
-  }
+  drawYLabel();
+  drawLegend();
+  drawNotes();
 }
 
 // ---------- 分析 ----------
@@ -1369,7 +1521,10 @@ function drawAnScatter(canvas, pts, opts) {
 
 // ---------- ダッシュボード ----------
 
+let dashRenderSeq = 0; // 並行描画ガード(タブ切替+更新ボタンの二重実行対策)
+
 async function renderDashboard() {
+  const seq = ++dashRenderSeq;
   const grid = $("dash-grid");
   grid.innerHTML = "";
   if (!charts.length) {
@@ -1377,6 +1532,7 @@ async function renderDashboard() {
     return;
   }
   for (const spec of charts) {
+    if (seq !== dashRenderSeq) return; // 新しい描画に取って代わられたら中断
     const card = document.createElement("div");
     card.className = "dash-card";
     card.innerHTML = `<h4>${esc(spec.name)}</h4>`;
@@ -1388,6 +1544,7 @@ async function renderDashboard() {
     grid.appendChild(card);
     try {
       const r = await api("/api/query", { sql: buildChartQuery(spec), limit: 100000 });
+      if (seq !== dashRenderSeq) return;
       drawChartInto(canvas, tdiv, spec, r);
     } catch (err) {
       card.innerHTML += `<div class="hint error">${esc(err.message)}</div>`;
