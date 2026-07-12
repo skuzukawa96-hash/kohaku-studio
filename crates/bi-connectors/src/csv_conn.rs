@@ -113,7 +113,7 @@ fn sniff_delimiter(text: &str, path: &Path) -> u8 {
         return b'\t';
     }
     let first = text.lines().next().unwrap_or("");
-    let candidates = [b',', b'\t', b';', b'|'];
+    let candidates = *b",\t;|";
     let mut best = b',';
     let mut best_n = 0;
     for &c in &candidates {
