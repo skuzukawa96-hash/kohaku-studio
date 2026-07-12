@@ -522,8 +522,13 @@ function drawChartInto(canvas, tableDiv, spec, result) {
 async function saveChart() {
   const spec = chartSpecFromForm();
   const idx = charts.findIndex((c) => c.id === spec.id);
-  if (idx >= 0) charts[idx] = spec;
-  else charts.push(spec);
+  if (idx >= 0) {
+    spec.layout = charts[idx].layout; // レイアウト設定は編集で失わない
+    charts[idx] = spec;
+  } else {
+    charts.push(spec);
+  }
+  dashCache.delete(spec.id); // 定義が変わったのでキャッシュ破棄
   editingChartId = spec.id;
   try {
     await api("/api/charts/set", { charts });
@@ -545,6 +550,7 @@ function renderChartList() {
     li.querySelector(".ch-del").onclick = async (e) => {
       e.stopPropagation();
       charts = charts.filter((x) => x.id !== c.id);
+      dashCache.delete(c.id);
       if (editingChartId === c.id) editingChartId = null;
       await api("/api/charts/set", { charts });
       renderChartList();
@@ -1522,9 +1528,57 @@ function drawAnScatter(canvas, pts, opts) {
 // ---------- ダッシュボード ----------
 
 let dashRenderSeq = 0; // 並行描画ガード(タブ切替+更新ボタンの二重実行対策)
+const dashCache = new Map(); // chartId → クエリ結果。レイアウト操作時の再クエリを避ける
 
-async function renderDashboard() {
+/** チャートのレイアウト設定(未設定は 1列幅 × 中高さ) */
+function chartLayout(spec) {
+  const l = spec.layout || {};
+  return { w: l.w === 2 ? 2 : 1, h: l.h === "s" || l.h === "l" ? l.h : "m" };
+}
+
+function applyCardLayout(card, spec) {
+  const l = chartLayout(spec);
+  card.classList.toggle("wide", l.w === 2);
+  card.classList.toggle("h-s", l.h === "s");
+  card.classList.toggle("h-l", l.h === "l");
+}
+
+async function saveChartsQuiet() {
+  try {
+    await api("/api/charts/set", { charts });
+  } catch (e) {
+    setStatus(e.message, true);
+  }
+}
+
+/** カードのレイアウト操作(幅・高さ・並び順)。設定はチャート定義として保存される */
+async function dashAction(act, spec, card, canvas, tdiv) {
+  const l = chartLayout(spec);
+  if (act === "width") {
+    spec.layout = { ...l, w: l.w === 2 ? 1 : 2 };
+  } else if (act === "height") {
+    spec.layout = { ...l, h: { s: "m", m: "l", l: "s" }[l.h] };
+  } else {
+    // 並び替え: charts配列とDOMを同時に入れ替える(再クエリなし)
+    const i = charts.findIndex((c) => c.id === spec.id);
+    const j = act === "left" ? i - 1 : i + 1;
+    if (i < 0 || j < 0 || j >= charts.length) return;
+    [charts[i], charts[j]] = [charts[j], charts[i]];
+    if (act === "left") card.parentElement.insertBefore(card, card.previousElementSibling);
+    else if (card.nextElementSibling) card.parentElement.insertBefore(card.nextElementSibling, card);
+    await saveChartsQuiet();
+    return;
+  }
+  applyCardLayout(card, spec);
+  // サイズ変更後はキャッシュ結果で再描画(Canvasは要素サイズに自動追従しないため)
+  const r = dashCache.get(spec.id);
+  if (r) drawChartInto(canvas, tdiv, spec, r);
+  await saveChartsQuiet();
+}
+
+async function renderDashboard(force) {
   const seq = ++dashRenderSeq;
+  if (force === true) dashCache.clear();
   const grid = $("dash-grid");
   grid.innerHTML = "";
   if (!charts.length) {
@@ -1535,15 +1589,30 @@ async function renderDashboard() {
     if (seq !== dashRenderSeq) return; // 新しい描画に取って代わられたら中断
     const card = document.createElement("div");
     card.className = "dash-card";
-    card.innerHTML = `<h4>${esc(spec.name)}</h4>`;
+    applyCardLayout(card, spec);
+    const head = document.createElement("div");
+    head.className = "dash-head";
+    head.innerHTML = `<h4>${esc(spec.name)}</h4>
+      <button class="dash-btn" data-act="left" title="左へ移動">◀</button>
+      <button class="dash-btn" data-act="right" title="右へ移動">▶</button>
+      <button class="dash-btn" data-act="width" title="幅を切替(1列 / 2列)">⬌</button>
+      <button class="dash-btn" data-act="height" title="高さを切替(小 / 中 / 大)">↕</button>`;
     const canvas = document.createElement("canvas");
     const tdiv = document.createElement("div");
     tdiv.className = "table-wrap hidden";
+    card.appendChild(head);
     card.appendChild(canvas);
     card.appendChild(tdiv);
     grid.appendChild(card);
+    head.querySelectorAll(".dash-btn").forEach((b) => {
+      b.onclick = () => dashAction(b.dataset.act, spec, card, canvas, tdiv);
+    });
     try {
-      const r = await api("/api/query", { sql: buildChartQuery(spec), limit: 100000 });
+      let r = dashCache.get(spec.id);
+      if (!r) {
+        r = await api("/api/query", { sql: buildChartQuery(spec), limit: 100000 });
+        dashCache.set(spec.id, r);
+      }
       if (seq !== dashRenderSeq) return;
       drawChartInto(canvas, tdiv, spec, r);
     } catch (err) {
@@ -1687,7 +1756,7 @@ function init() {
   $("btn-tst-md").onclick = tstCopyMarkdown;
   updateTestModeVisibility();
 
-  $("btn-dash-refresh").onclick = renderDashboard;
+  $("btn-dash-refresh").onclick = () => renderDashboard(true); // 更新はキャッシュも破棄
   $("btn-project-save").onclick = () => openProjectModal("save");
   $("btn-project-load").onclick = () => openProjectModal("load");
   $("prj-ok").onclick = projectOk;

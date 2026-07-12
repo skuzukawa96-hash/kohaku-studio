@@ -127,13 +127,25 @@ table.grid tr:nth-child(even) td { background: #20242b; }
 
 /* ダッシュボード */
 #dash-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px; overflow-y: auto;
 }
+@media (max-width: 900px) { #dash-grid { grid-template-columns: 1fr; } }
 .dash-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
-.dash-card h4 { margin: 0 0 6px; font-size: 13px; }
+.dash-card.wide { grid-column: 1 / -1; }
+.dash-head { display: flex; align-items: center; gap: 2px; margin-bottom: 6px; }
+.dash-head h4 { flex: 1; margin: 0; font-size: 13px; }
+.dash-btn {
+  background: none; border: 1px solid transparent; color: var(--muted);
+  cursor: pointer; font-size: 12px; padding: 1px 5px; border-radius: 4px;
+}
+.dash-btn:hover { color: var(--text); border-color: var(--border); background: var(--bg); }
 .dash-card canvas { width: 100%; height: 260px; }
+.dash-card.h-s canvas { height: 180px; }
+.dash-card.h-l canvas { height: 400px; }
 .dash-card .table-wrap { max-height: 260px; }
+.dash-card.h-s .table-wrap { max-height: 180px; }
+.dash-card.h-l .table-wrap { max-height: 400px; }
 
 /* 分析タブ */
 .an-source { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 8px; flex-wrap: wrap; }
