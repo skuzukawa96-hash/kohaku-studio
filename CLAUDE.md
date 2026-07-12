@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## プロジェクト概要
 
-Kohaku Studio は Rust 製のローカルファーストBIツール。単一バイナリがローカルHTTPサーバー（既定ポート 5590、`127.0.0.1` のみ）を起動し、ブラウザでUIを開く。**低スペックPCで軽快に動くことが最優先の設計目標**であり、外部ランタイム（Node / WebView / .NET）や重い依存の追加は避けること。
+Kohaku Studio は Rust 製のローカルファーストBIツール。単一バイナリがローカルHTTPサーバー（既定ポート 5590、`127.0.0.1` のみ）を起動し、ブラウザでUIを開く。**低スペックPCで軽快に動くことが最優先の設計目標**であり、外部ランタイム（Node / WebView / .NET）の追加は不可。重い依存も原則避けるが、v0.3以降は必要な機能（Parquet対応の `arrow` 等）に限り、実行時の軽さを損なわない形で採用してよい（オーナー決定済み）。
 
 ## コマンド
 
@@ -17,6 +17,12 @@ cargo test -p bi-app test_limit_truncation   # 単一テスト（名前の部分
 # CIと同じチェック（PRの前に必ず通すこと。clippyは警告=エラー）
 cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
+
+# 実DBが必要なコネクタテスト（環境変数が無ければ自動スキップされる）
+# 例: KOHAKU_TEST_PG_URL=postgres://kohaku:kohaku@localhost:5432/demo
+#     KOHAKU_TEST_MYSQL_URL=mysql://kohaku:kohaku@localhost:3306/demo
+cargo test -p bi-connectors test_postgres_live
+cargo test -p bi-connectors test_mysql_live
 ```
 
 実行:
@@ -59,7 +65,7 @@ bi-app        HTTPサーバー(tiny_http) / SQLite in-memoryクエリエンジ�
 - `crates/bi-app/src/server.rs` — HTTPサーバー。全APIは `POST /api/*`（JSON）で、`handle_api()` がディスパッチする。新しいAPIはここに追加。ローカルCSRF対策（POSTのみ / `Content-Type: application/json` 必須 / `Origin` は localhost のみ許可）を壊さないこと。
 - `crates/bi-app/src/engine.rs` — SQLite in-memory クエリエンジン。省メモリ用PRAGMA設定あり。
 - `crates/bi-app/src/analysis.rs` — 分析API（profile / regression / cluster / advise / test）。
-- `crates/bi-app/ui/` — 内蔵UI（vanilla JS + 自前Canvasレンダラ、約2,000行の `app.js`）。`include_str!` でバイナリに埋め込まれるため、**UIの変更も再ビルドが必要**。JSライブラリの追加は不可（オフライン完結・依存ゼロ）。
+- `crates/bi-app/ui/` — 内蔵UI（vanilla JS + 自前Canvasレンダラ、約2,000行の `app.js`）。`include_str!` でバイナリに埋め込まれるため、**UIの変更も再ビルドが必要**。JSライブラリの追加は不可（オフライン完結・依存ゼロ）。注意: incrementalビルドが `ui/*.js` の変更を拾わないことがある。UI変更が反映されない時は `ui/` 配下のファイルを touch してからビルドするか `cargo clean -p bi-app` する。
 - `crates/bi-analytics/src/` — `lib.rs`（統計・回帰・k-means++）、`htest.rs`（統計検定・効果量・多重比較）、`distributions.rs`（p値計算）、`advisor.rs`（検定の自動提案）。**このクレートは外部依存なし（serdeのみ）を維持する。**
 - `crates/bi-core/src/lib.rs` — `TableData` / `DataType` / `Value` / `Connector` trait / `BiResult`。
 
@@ -67,6 +73,12 @@ bi-app        HTTPサーバー(tiny_http) / SQLite in-memoryクエリエンジ�
 
 - **新しいデータソース**: `bi_core::Connector` trait を実装し、`bi-connectors/src/lib.rs` の `ConnectorRegistry::new()` に登録するだけ。UI・エンジン側の変更は不要（ファイルは拡張子、接続URLはスキームで解決される）。
 - **新しいチャートタイプ**: `bi-app/ui/app.js` の `buildChartQuery()`（SQL組み立て）と `renderChart()`（Canvas描画）に分岐を追加。
+
+## 開発フロー
+
+- feature ブランチ → push 前に上記の fmt / clippy / test を通す → PR 作成 → CI green を確認 → **マージとタグの強制pushはオーナーが行う**（Claude は自分の PR をマージしない）。
+- CI の Rust stable はローカルより新しいことがある。ローカルで通るのに CI の clippy だけ落ちる場合は `rustup update stable` でローカルを揃えてから再現する。
+- コミット前に、変更が UI で確認できるものは必ず実際に動かして検証する（テストが通る ≠ 動く）。
 
 ## 規約
 
