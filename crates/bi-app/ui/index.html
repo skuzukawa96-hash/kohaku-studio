@@ -216,7 +216,13 @@
     <section id="tab-dashboard" class="pane">
       <div class="sql-toolbar">
         <button id="btn-dash-refresh" class="primary">🔄 更新</button>
-        <span class="hint">保存済みチャートを一覧表示します</span>
+        <label class="dash-filter-label">グローバルフィルタ
+          <select id="dash-filter-col"><option value="">(列を選択)</option></select>
+        </label>
+        <div id="dash-filter-vals" class="checklist dash-filter-vals hidden"></div>
+        <button id="btn-dash-filter-apply" class="hidden">適用</button>
+        <span id="dash-filter-chips"></span>
+        <span class="hint">フィルタは対象列を持つ全チャートに連動します</span>
       </div>
       <div id="dash-grid"></div>
     </section>

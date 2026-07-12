@@ -471,8 +471,25 @@ async function loadChartColumns() {
   }
 }
 
-function buildChartQuery(spec) {
-  const base = chartBaseSql(spec);
+/** SQLリテラル化(数値は素通し、文字列は''エスケープ) */
+function sqlLit(v) {
+  if (typeof v === "number") return String(v);
+  if (typeof v === "boolean") return v ? "1" : "0";
+  return "'" + String(v).replace(/'/g, "''") + "'";
+}
+
+/** チャートの元クエリにグローバルフィルタ(WHERE col IN ...)を重ねる */
+function filteredBase(spec, filters) {
+  let base = chartBaseSql(spec);
+  const conds = (filters || [])
+    .filter((f) => f.values.length)
+    .map((f) => `${qi(f.col)} IN (${f.values.map(sqlLit).join(", ")})`);
+  if (conds.length) base = `SELECT * FROM (${base}) WHERE ${conds.join(" AND ")}`;
+  return base;
+}
+
+function buildChartQuery(spec, filters) {
+  const base = filteredBase(spec, filters);
   const x = qi(spec.x), y = qi(spec.y);
   // 系列列(任意)。指定時は s 列としてSELECTに含める
   const s = spec.series ? `, ${qi(spec.series)} AS s` : "";
@@ -529,6 +546,7 @@ async function saveChart() {
     charts.push(spec);
   }
   dashCache.delete(spec.id); // 定義が変わったのでキャッシュ破棄
+  dashSourceCols.delete("sql:" + spec.id);
   editingChartId = spec.id;
   try {
     await api("/api/charts/set", { charts });
@@ -551,6 +569,7 @@ function renderChartList() {
       e.stopPropagation();
       charts = charts.filter((x) => x.id !== c.id);
       dashCache.delete(c.id);
+      dashSourceCols.delete("sql:" + c.id);
       if (editingChartId === c.id) editingChartId = null;
       await api("/api/charts/set", { charts });
       renderChartList();
@@ -1530,6 +1549,123 @@ function drawAnScatter(canvas, pts, opts) {
 let dashRenderSeq = 0; // 並行描画ガード(タブ切替+更新ボタンの二重実行対策)
 const dashCache = new Map(); // chartId → クエリ結果。レイアウト操作時の再クエリを避ける
 
+// ---------- グローバルフィルタ(ウィジェット間連動) ----------
+
+let dashFilters = []; // [{col, values:[...]}] セッション内のみ保持
+const dashSourceCols = new Map(); // "sql:"+chartId → SQLソースの列一覧キャッシュ
+
+/** 全データセット横断の列名一覧(重複なし) */
+function allDatasetColumns() {
+  const seen = new Set();
+  for (const d of datasets) {
+    if (!d.schema) continue;
+    for (const c of d.schema.columns) seen.add(c.name);
+  }
+  return [...seen].sort();
+}
+
+function renderFilterColSelect() {
+  const sel = $("dash-filter-col");
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">(列を選択)</option>';
+  for (const c of allDatasetColumns()) {
+    const op = document.createElement("option");
+    op.value = c;
+    op.textContent = c;
+    sel.appendChild(op);
+  }
+  if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
+}
+
+/** 選択列の候補値(列を持つ全データセットのUNION、先頭100件)をチェックリストに出す */
+async function loadFilterValues() {
+  const col = $("dash-filter-col").value;
+  const box = $("dash-filter-vals");
+  const btn = $("btn-dash-filter-apply");
+  box.innerHTML = "";
+  box.classList.toggle("hidden", !col);
+  btn.classList.toggle("hidden", !col);
+  if (!col) return;
+  const dss = datasets.filter((d) => d.schema && d.schema.columns.some((c) => c.name === col));
+  if (!dss.length) return;
+  const union = dss.map((d) => `SELECT ${qi(col)} AS v FROM ${qi(d.name)}`).join(" UNION ");
+  try {
+    const r = await api("/api/query", {
+      sql: `SELECT DISTINCT v FROM (${union}) WHERE v IS NOT NULL ORDER BY v LIMIT 100`,
+      limit: 100,
+    });
+    const active = dashFilters.find((f) => f.col === col);
+    for (const row of r.rows) {
+      const v = row[0];
+      const lb = document.createElement("label");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !!(active && active.values.some((x) => x === v));
+      cb.__val = v; // 数値/文字列の型を保持(SQLリテラルの書き方が変わる)
+      lb.appendChild(cb);
+      lb.appendChild(document.createTextNode(" " + String(v)));
+      box.appendChild(lb);
+    }
+    if (r.rows.length >= 100) {
+      const hint = document.createElement("span");
+      hint.className = "hint";
+      hint.textContent = "(先頭100件のみ表示)";
+      box.appendChild(hint);
+    }
+  } catch (e) {
+    box.innerHTML = `<span class="hint error">${esc(e.message)}</span>`;
+  }
+}
+
+function renderFilterChips() {
+  const wrap = $("dash-filter-chips");
+  wrap.innerHTML = "";
+  for (const f of dashFilters) {
+    const chip = document.createElement("span");
+    chip.className = "dash-chip";
+    const label =
+      f.values.slice(0, 3).map(String).join(", ") + (f.values.length > 3 ? ` +${f.values.length - 3}` : "");
+    chip.innerHTML = `<b>${esc(f.col)}</b>: ${esc(label)} <button title="このフィルタを外す">✕</button>`;
+    chip.querySelector("button").onclick = () => {
+      dashFilters = dashFilters.filter((x) => x !== f);
+      renderFilterChips();
+      renderDashboard(true);
+    };
+    wrap.appendChild(chip);
+  }
+}
+
+function applyDashFilter() {
+  const col = $("dash-filter-col").value;
+  if (!col) return;
+  const values = [...$("dash-filter-vals").querySelectorAll("input:checked")].map((cb) => cb.__val);
+  dashFilters = dashFilters.filter((f) => f.col !== col);
+  if (values.length) dashFilters.push({ col, values });
+  renderFilterChips();
+  // ピッカーを畳む
+  $("dash-filter-col").value = "";
+  $("dash-filter-vals").classList.add("hidden");
+  $("btn-dash-filter-apply").classList.add("hidden");
+  renderDashboard(true);
+}
+
+/** チャートのソースが持つ列一覧(フィルタ適用可否の判定用) */
+async function chartSourceCols(spec) {
+  if (spec.source.kind === "dataset") {
+    const d = datasets.find((x) => x.name === spec.source.dataset);
+    return d && d.schema ? d.schema.columns.map((c) => c.name) : [];
+  }
+  const key = "sql:" + spec.id;
+  if (dashSourceCols.has(key)) return dashSourceCols.get(key);
+  try {
+    const r = await api("/api/query", { sql: `SELECT * FROM (${chartBaseSql(spec)}) LIMIT 1`, limit: 1 });
+    dashSourceCols.set(key, r.columns);
+    return r.columns;
+  } catch (e) {
+    return [];
+  }
+}
+
 /** チャートのレイアウト設定(未設定は 1列幅 × 中高さ) */
 function chartLayout(spec) {
   const l = spec.layout || {};
@@ -1585,14 +1721,23 @@ async function renderDashboard(force) {
     grid.innerHTML = '<div class="hint">保存済みチャートがありません。「チャート」タブで作成・保存してください。</div>';
     return;
   }
+  renderFilterColSelect();
   for (const spec of charts) {
     if (seq !== dashRenderSeq) return; // 新しい描画に取って代わられたら中断
+    // このチャートに適用できるフィルタと、列が無く適用外のフィルタを仕分ける
+    const cols = await chartSourceCols(spec);
+    if (seq !== dashRenderSeq) return;
+    const applicable = dashFilters.filter((f) => cols.includes(f.col));
+    const na = dashFilters.filter((f) => !cols.includes(f.col));
+    const naHtml = na.length
+      ? `<span class="dash-na">フィルタ対象外: ${esc(na.map((f) => f.col).join(", "))}</span>`
+      : "";
     const card = document.createElement("div");
     card.className = "dash-card";
     applyCardLayout(card, spec);
     const head = document.createElement("div");
     head.className = "dash-head";
-    head.innerHTML = `<h4>${esc(spec.name)}</h4>
+    head.innerHTML = `<h4>${esc(spec.name)}${naHtml}</h4>
       <button class="dash-btn" data-act="left" title="左へ移動">◀</button>
       <button class="dash-btn" data-act="right" title="右へ移動">▶</button>
       <button class="dash-btn" data-act="width" title="幅を切替(1列 / 2列)">⬌</button>
@@ -1610,7 +1755,7 @@ async function renderDashboard(force) {
     try {
       let r = dashCache.get(spec.id);
       if (!r) {
-        r = await api("/api/query", { sql: buildChartQuery(spec), limit: 100000 });
+        r = await api("/api/query", { sql: buildChartQuery(spec, applicable), limit: 100000 });
         dashCache.set(spec.id, r);
       }
       if (seq !== dashRenderSeq) return;
@@ -1757,6 +1902,8 @@ function init() {
   updateTestModeVisibility();
 
   $("btn-dash-refresh").onclick = () => renderDashboard(true); // 更新はキャッシュも破棄
+  $("dash-filter-col").onchange = loadFilterValues;
+  $("btn-dash-filter-apply").onclick = applyDashFilter;
   $("btn-project-save").onclick = () => openProjectModal("save");
   $("btn-project-load").onclick = () => openProjectModal("load");
   $("prj-ok").onclick = projectOk;

@@ -126,6 +126,21 @@ table.grid tr:nth-child(even) td { background: #20242b; }
 #chart-canvas { width: 100%; height: 400px; background: var(--bg2); border-radius: 6px; }
 
 /* ダッシュボード */
+.dash-filter-label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.dash-filter-vals {
+  display: flex; flex-wrap: wrap; gap: 2px 10px;
+  max-width: 420px; max-height: 76px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; background: var(--bg2);
+}
+.dash-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--bg2); border: 1px solid var(--accent); border-radius: 12px;
+  padding: 2px 8px; font-size: 12px; color: var(--text); margin-right: 6px;
+}
+.dash-chip button { background: none; border: none; color: var(--muted); cursor: pointer; padding: 0; font-size: 12px; }
+.dash-chip button:hover { color: #e06c75; }
+.dash-na { color: var(--muted); font-size: 11px; font-weight: normal; margin-left: 6px; }
+
 #dash-grid {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px; overflow-y: auto;
