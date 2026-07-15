@@ -24,7 +24,7 @@ Kohaku Studio の開発ロードマップです。バージョンは目安で、
 
 - ✅ Parquet キャッシュ（大容量データの高速再読み込み）
 - ✅ チャート / ダッシュボードの PNG / HTML エクスポート
-- Plugin API のドラフト（Connector / Chart / Transform）
+- ✅ Plugin API のドラフト（Connector / Chart / Transform）→ [docs/plugin-api-draft.md](docs/plugin-api-draft.md)（実装は v0.4 以降）
 - ✅ クラスタ数 k のエルボー法による自動提案
 - ✅ 時系列分解（トレンド / 季節性）
 
