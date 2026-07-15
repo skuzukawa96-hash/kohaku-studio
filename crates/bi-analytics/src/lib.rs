@@ -437,6 +437,80 @@ fn kmeans_once(data: &[f64], n: usize, dim: usize, k: usize, seed: u64) -> (Vec<
     (centroids, inertia, iterations)
 }
 
+// ---------- エルボー法(クラスタ数kの自動提案) ----------
+
+/// エルボー法の結果。k=1..=k_max の慣性系列と提案k
+#[derive(Debug, Clone, Serialize)]
+pub struct ElbowResult {
+    pub ks: Vec<usize>,
+    /// 標準化空間での慣性(クラスタ内二乗和)。kに対して減少していく
+    pub inertias: Vec<f64>,
+    pub suggested_k: usize,
+}
+
+/// エルボー法: k=1..=k_max で k-means を実行し、慣性の減少が緩やかになる
+/// 「肘」の位置を提案する。決定的(seed固定)。
+/// rows は kmeans と同じ前提(各行が特徴量ベクトル、NaNなし)。
+pub fn elbow(rows: &[Vec<f64>], k_max: usize, seed: u64) -> Result<ElbowResult, String> {
+    let n = rows.len();
+    if n < 2 {
+        return Err("データ数が少なすぎます(2行以上必要)".to_string());
+    }
+    let dim = rows[0].len();
+    if dim == 0 {
+        return Err("特徴量を指定してください".to_string());
+    }
+    let k_max = k_max.clamp(2, 20).min(n);
+
+    // k=1 の慣性は標準化空間での全体二乗和。z-score(分母n)の性質から
+    // 「非定数列の数 × n」に一致するため、k-means を回さず直接求める
+    let mut nonconst = 0usize;
+    for d in 0..dim {
+        let mean = rows.iter().map(|r| r[d]).sum::<f64>() / n as f64;
+        let var = rows.iter().map(|r| (r[d] - mean).powi(2)).sum::<f64>() / n as f64;
+        if var.sqrt() > 1e-12 {
+            nonconst += 1;
+        }
+    }
+    let mut ks = vec![1usize];
+    let mut inertias = vec![(n * nonconst) as f64];
+    for k in 2..=k_max {
+        ks.push(k);
+        inertias.push(kmeans(rows, k, seed)?.inertia);
+    }
+    let suggested_k = suggest_elbow(&ks, &inertias);
+    Ok(ElbowResult {
+        ks,
+        inertias,
+        suggested_k,
+    })
+}
+
+/// 「肘」の検出: 曲線を[0,1]に正規化し、両端を結ぶ弦 y=1-x から
+/// 最も下に離れた点を選ぶ(Kneedle法の簡易版)。同値なら小さいkを優先。
+fn suggest_elbow(ks: &[usize], inertias: &[f64]) -> usize {
+    let m = ks.len();
+    if m < 3 {
+        return ks[m - 1]; // 点が2つ以下では曲線にならないため最大kを返す
+    }
+    let span = inertias[0] - inertias[m - 1];
+    if span <= 1e-12 {
+        return ks[1]; // 慣性が下がらない=クラスタ構造なし。最小の2を返す
+    }
+    let mut best_i = 1;
+    let mut best_d = f64::MIN;
+    for i in 1..m - 1 {
+        let x = (ks[i] - ks[0]) as f64 / (ks[m - 1] - ks[0]) as f64;
+        let y = (inertias[i] - inertias[m - 1]) / span;
+        let d = 1.0 - x - y; // 弦からの下方距離(ユークリッド距離の√2倍に比例)
+        if d > best_d {
+            best_d = d;
+            best_i = i;
+        }
+    }
+    ks[best_i]
+}
+
 fn sq_dist(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| (x - y) * (x - y)).sum()
 }
@@ -551,5 +625,47 @@ mod tests {
         let a = kmeans(&rows, 3, 7).unwrap();
         let b = kmeans(&rows, 3, 7).unwrap();
         assert_eq!(a.assignments, b.assignments);
+    }
+
+    #[test]
+    fn test_elbow_three_clusters() {
+        // 明確に分離した3クラスタ → k=3 が提案されるはず
+        let mut rows = Vec::new();
+        for i in 0..60 {
+            let offset = (i % 3) as f64 * 100.0;
+            rows.push(vec![
+                offset + (i / 3) as f64 * 0.1,
+                offset - (i / 3) as f64 * 0.1,
+            ]);
+        }
+        let r = elbow(&rows, 10, 42).unwrap();
+        assert_eq!(r.suggested_k, 3);
+        assert_eq!(r.ks, (1..=10).collect::<Vec<_>>());
+        // 慣性は k に対して(ほぼ)単調減少する
+        for i in 1..r.inertias.len() {
+            assert!(r.inertias[i] <= r.inertias[i - 1] + 1e-9);
+        }
+        // k=1 の慣性 = 非定数列数 × n = 2 × 60
+        assert!((r.inertias[0] - 120.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_elbow_deterministic_and_clamped() {
+        let rows: Vec<Vec<f64>> = (0..5).map(|i| vec![i as f64]).collect();
+        // k_max=50 でもデータ数5に切り詰められる
+        let a = elbow(&rows, 50, 42).unwrap();
+        assert_eq!(*a.ks.last().unwrap(), 5);
+        let b = elbow(&rows, 50, 42).unwrap();
+        assert_eq!(a.suggested_k, b.suggested_k);
+        assert_eq!(a.inertias, b.inertias);
+    }
+
+    #[test]
+    fn test_elbow_no_structure() {
+        // 全行同一値(定数列のみ)→ 慣性が下がらないので最小の k=2 を返す
+        let rows: Vec<Vec<f64>> = (0..20).map(|_| vec![5.0, 5.0]).collect();
+        let r = elbow(&rows, 8, 42).unwrap();
+        assert_eq!(r.suggested_k, 2);
+        assert!(r.inertias[0].abs() < 1e-9);
     }
 }

@@ -1455,6 +1455,93 @@ async function runCluster(saveAs) {
   }
 }
 
+/** エルボー法でクラスタ数kを提案し、曲線を描画してユーザーが確認できるようにする */
+async function suggestClusterK() {
+  const out = $("clu-out");
+  const features = checkedValues($("clu-x"));
+  out.innerHTML = '<div class="hint">エルボー法で計算中(k=1〜10でクラスタリングを試行)...</div>';
+  try {
+    const r = await api("/api/analyze/elbow", { source: anGetSource(), features, k_max: 10 });
+    $("clu-k").value = r.suggested_k;
+    out.innerHTML =
+      metricHtml([
+        ["提案されたk", r.suggested_k],
+        ["使用行数", r.n_used.toLocaleString() + (r.dropped ? `(欠損除外 ${r.dropped})` : "")],
+      ]) +
+      '<div class="hint">WCSS(クラスタ内二乗和)の減少が緩やかになる「肘」の位置を提案しました。' +
+      "曲線を確認し、必要ならkを調整してから実行してください。</div>";
+    $("clu-axes-row").classList.add("hidden"); // 軸選択は散布図用なので隠す
+    drawElbowChart($("clu-canvas"), r);
+  } catch (e) {
+    out.innerHTML = `<div class="hint error">${esc(e.message)}</div>`;
+  }
+}
+
+/** エルボー曲線(k vs WCSS)。提案kの位置を強調表示する */
+function drawElbowChart(canvas, r) {
+  canvas.classList.remove("hidden");
+  const { ctx, w, h } = setupCanvas(canvas);
+  const C = CHART_COLORS;
+  const m = { l: 60, r: 16, t: 14, b: 44 };
+  const pw = w - m.l - m.r;
+  const ph = h - m.t - m.b;
+  const kMin = r.ks[0];
+  const kMax = r.ks[r.ks.length - 1];
+  const yTicks = niceTicks(0, Math.max(...r.inertias), 5);
+  const yMax = yTicks[yTicks.length - 1] || 1;
+  const px = (k) => m.l + ((k - kMin) / Math.max(1, kMax - kMin)) * pw;
+  const py = (v) => m.t + ph - (v / yMax) * ph;
+
+  // 軸・目盛り
+  ctx.strokeStyle = C.grid;
+  ctx.fillStyle = C.text;
+  ctx.textAlign = "right";
+  for (const t of yTicks) {
+    ctx.beginPath();
+    ctx.moveTo(m.l, py(t));
+    ctx.lineTo(m.l + pw, py(t));
+    ctx.stroke();
+    ctx.fillText(fmtTick(t), m.l - 6, py(t) + 4);
+  }
+  ctx.textAlign = "center";
+  for (const k of r.ks) ctx.fillText(String(k), px(k), m.t + ph + 16);
+  ctx.fillText("クラスタ数 k", m.l + pw / 2, m.t + ph + 34);
+  ctx.save();
+  ctx.translate(14, m.t + ph / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText("WCSS(クラスタ内二乗和)", 0, 0);
+  ctx.restore();
+
+  // 提案kの縦線(破線)
+  ctx.strokeStyle = C.accent2;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(px(r.suggested_k), m.t);
+  ctx.lineTo(px(r.suggested_k), m.t + ph);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = C.accent2;
+  ctx.fillText(`提案 k=${r.suggested_k}`, px(r.suggested_k), m.t + 10);
+
+  // 曲線と点
+  ctx.strokeStyle = C.accent;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  r.ks.forEach((k, i) => {
+    if (i === 0) ctx.moveTo(px(k), py(r.inertias[i]));
+    else ctx.lineTo(px(k), py(r.inertias[i]));
+  });
+  ctx.stroke();
+  ctx.lineWidth = 1;
+  r.ks.forEach((k, i) => {
+    ctx.beginPath();
+    ctx.arc(px(k), py(r.inertias[i]), k === r.suggested_k ? 5 : 3, 0, Math.PI * 2);
+    ctx.fillStyle = k === r.suggested_k ? C.accent2 : C.accent;
+    ctx.fill();
+  });
+  ctx.textAlign = "left";
+}
+
 function drawClusterScatter() {
   if (!lastCluster) return;
   const xi = parseInt($("clu-ax").value, 10) || 0;
@@ -2111,6 +2198,7 @@ function init() {
   $("btn-an-profile").onclick = runProfile;
   $("btn-an-reg").onclick = runRegression;
   $("btn-an-clu").onclick = () => runCluster();
+  $("btn-clu-elbow").onclick = suggestClusterK;
   $("btn-clu-save").onclick = () => {
     const name = $("clu-save-name").value.trim();
     if (!name) { setStatus("保存名を入力してください", true); return; }
