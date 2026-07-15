@@ -229,6 +229,11 @@ fn my_value(row: &sqlx::mysql::MySqlRow, i: usize) -> Value {
         _ => {}
     }
     take!(String, Value::Text);
+    // バイナリ照合(utf8mb4_bin等)の文字列列は VARBINARY として返り
+    // String で直読できないため、バイト列経由でテキスト化する
+    take!(Vec<u8>, |v: Vec<u8>| Value::Text(
+        String::from_utf8_lossy(&v).into_owned()
+    ));
     Value::Text(format!("[{tname}]"))
 }
 
@@ -256,7 +261,16 @@ impl Connector for MySqlConnector {
             .fetch_all(&pool)
             .await
             .map_err(|e| format!("テーブル一覧の取得に失敗: {e}"))?;
-            Ok(rows.iter().map(|r| r.get::<String, _>(0)).collect())
+            // 新しめのMySQL 8.0.xは information_schema の文字列列を
+            // バイナリ照合で返し String 直読が VARBINARY エラーになるため、
+            // 失敗時はバイト列経由でフォールバックする
+            Ok(rows
+                .iter()
+                .map(|r| match r.try_get::<String, _>(0) {
+                    Ok(s) => s,
+                    Err(_) => String::from_utf8_lossy(&r.get::<Vec<u8>, _>(0)).into_owned(),
+                })
+                .collect())
         })
     }
 
