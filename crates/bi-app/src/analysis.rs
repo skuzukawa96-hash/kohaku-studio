@@ -283,6 +283,44 @@ pub fn api_regression(state: &mut AppState, req: &Json) -> BiResult<Json> {
 
 // ---------- クラスタリング ----------
 
+/// エルボー法によるクラスタ数kの自動提案。
+/// k=1..=k_max の慣性(WCSS)系列と提案kを返す(クラスタリング自体は実行しない)。
+pub fn api_cluster_elbow(state: &mut AppState, req: &Json) -> BiResult<Json> {
+    let features = str_list(req, "features");
+    if features.is_empty() {
+        return Err("特徴量を1つ以上指定してください".to_string());
+    }
+    let k_max = req
+        .get("k_max")
+        .and_then(|x| x.as_u64())
+        .unwrap_or(10)
+        .clamp(2, 20) as usize;
+
+    let result = resolve_source(state, req)?;
+    let fis: Vec<usize> = features
+        .iter()
+        .map(|f| col_index(&result, f))
+        .collect::<BiResult<Vec<_>>>()?;
+    let x_all: Vec<Vec<f64>> = fis.iter().map(|&i| col_f64(&result, i)).collect();
+
+    let mut rows: Vec<Vec<f64>> = Vec::new();
+    for i in 0..result.rows.len() {
+        if x_all.iter().any(|c| !c[i].is_finite()) {
+            continue;
+        }
+        rows.push(x_all.iter().map(|c| c[i]).collect());
+    }
+    let dropped = result.rows.len() - rows.len();
+    let r = bi_analytics::elbow(&rows, k_max, 42)?;
+    Ok(json!({
+        "ks": r.ks,
+        "inertias": r.inertias.iter().map(|v| round4(*v)).collect::<Vec<_>>(),
+        "suggested_k": r.suggested_k,
+        "n_used": rows.len(),
+        "dropped": dropped,
+    }))
+}
+
 pub fn api_cluster(state: &mut AppState, req: &Json) -> BiResult<Json> {
     let features = str_list(req, "features");
     if features.is_empty() {
