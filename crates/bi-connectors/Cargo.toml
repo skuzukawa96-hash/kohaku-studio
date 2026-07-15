@@ -21,3 +21,10 @@ sqlx = { version = "0.8", default-features = false, features = [
 tokio = { version = "1", default-features = false, features = ["rt"] }
 chrono = { version = "0.4", default-features = false }
 rust_decimal = { version = "1", default-features = false }
+# Parquetキャッシュ(v0.3)。arrow系はメジャーバージョンを揃える必要がある。
+# 実行時の軽さを保つため default-features を切り、圧縮は snappy のみ。
+parquet = { version = "59", default-features = false, features = ["arrow", "snap"] }
+arrow-array = "59"
+arrow-schema = "59"
+serde.workspace = true
+serde_json.workspace = true

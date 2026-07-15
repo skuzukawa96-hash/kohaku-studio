@@ -22,7 +22,7 @@ Kohaku Studio の開発ロードマップです。バージョンは目安で、
 
 ## v0.3 — 出力と拡張性
 
-- Parquet キャッシュ（大容量データの高速再読み込み）
+- ✅ Parquet キャッシュ（大容量データの高速再読み込み）
 - チャート / ダッシュボードの PNG / HTML エクスポート
 - Plugin API のドラフト（Connector / Chart / Transform）
 - クラスタ数 k のエルボー法による自動提案
