@@ -1766,6 +1766,233 @@ async function renderDashboard(force) {
   }
 }
 
+// ---------- エクスポート(PNG / HTMLレポート) ----------
+
+/** style.css のCSS変数を取得(エクスポート画像の配色をアプリと一致させる) */
+function cssVar(name, fallback) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+}
+
+function tsStamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+}
+
+function safeFilename(s) {
+  return (s || "export").replace(/[\\/:*?"<>|]/g, "_").slice(0, 60);
+}
+
+function downloadDataUrl(url, filename) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+}
+
+/** Canvasは透明背景(CSS任せ)のため、背景色を合成した不透明PNGを作る */
+function opaquePngDataUrl(canvas) {
+  const out = document.createElement("canvas");
+  out.width = canvas.width;
+  out.height = canvas.height;
+  const ctx = out.getContext("2d");
+  ctx.fillStyle = cssVar("--bg2", "#23272f");
+  ctx.fillRect(0, 0, out.width, out.height);
+  ctx.drawImage(canvas, 0, 0);
+  return out.toDataURL("image/png");
+}
+
+/** チャートタブ: プレビュー中のチャートをタイトル付きPNGで保存 */
+function exportChartPng() {
+  const canvas = $("chart-canvas");
+  const spec = chartSpecFromForm();
+  if (spec.chart_type === "table") {
+    setStatus("テーブルはPNGに対応していません(ダッシュボードのHTMLレポートを使ってください)", true);
+    return;
+  }
+  if (canvas.classList.contains("hidden") || !canvas.width) {
+    setStatus("先にプレビューを実行してください", true);
+    return;
+  }
+  const dpr = window.devicePixelRatio || 1;
+  const titleH = Math.round(30 * dpr);
+  const out = document.createElement("canvas");
+  out.width = canvas.width;
+  out.height = canvas.height + titleH;
+  const ctx = out.getContext("2d");
+  ctx.fillStyle = cssVar("--bg2", "#23272f");
+  ctx.fillRect(0, 0, out.width, out.height);
+  ctx.fillStyle = cssVar("--text", "#d7dce3");
+  ctx.font = `bold ${Math.round(14 * dpr)}px 'Yu Gothic UI', sans-serif`;
+  ctx.fillText(spec.name, Math.round(12 * dpr), Math.round(20 * dpr));
+  ctx.drawImage(canvas, 0, titleH);
+  downloadDataUrl(out.toDataURL("image/png"), `${safeFilename(spec.name)}.png`);
+  setStatus(`PNGを保存しました: ${spec.name}`);
+}
+
+/** ダッシュボードPNG用: テーブル型チャートを簡易表として描き込む */
+function drawTableInto(ctx, spec, box) {
+  const r = spec ? dashCache.get(spec.id) : null;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(box.x, box.y, box.w, box.h);
+  ctx.clip();
+  ctx.font = "10px 'Yu Gothic UI', sans-serif";
+  if (!r) {
+    ctx.fillStyle = cssVar("--muted", "#8b93a1");
+    ctx.fillText("(データ未取得)", box.x, box.y + 12);
+    ctx.restore();
+    return;
+  }
+  const cols = r.columns.slice(0, 6);
+  const cw = box.w / cols.length;
+  const lh = 16;
+  ctx.fillStyle = cssVar("--muted", "#8b93a1");
+  cols.forEach((cname, ci) => ctx.fillText(String(cname), box.x + ci * cw, box.y + 10, cw - 6));
+  ctx.fillStyle = cssVar("--text", "#d7dce3");
+  const maxRows = Math.max(0, Math.floor((box.h - lh) / lh));
+  r.rows.slice(0, maxRows).forEach((row, ri) => {
+    cols.forEach((_, ci) => {
+      const v = row[ci];
+      ctx.fillText(v === null ? "" : String(v), box.x + ci * cw, box.y + 10 + (ri + 1) * lh, cw - 6);
+    });
+  });
+  ctx.restore();
+}
+
+function roundRectPath(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+/** ダッシュボード全体を1枚のPNGに合成して保存(見た目のレイアウトを維持) */
+function exportDashPng() {
+  const grid = $("dash-grid");
+  const cards = [...grid.querySelectorAll(".dash-card")];
+  if (!cards.length) {
+    setStatus("ダッシュボードにチャートがありません", true);
+    return;
+  }
+  const gr = grid.getBoundingClientRect();
+  const scale = 2; // 印刷にも耐える解像度で書き出す
+  const height = Math.max(...cards.map((c) => c.getBoundingClientRect().bottom)) - gr.top + 8;
+  const out = document.createElement("canvas");
+  out.width = Math.round(gr.width * scale);
+  out.height = Math.round(height * scale);
+  const ctx = out.getContext("2d");
+  ctx.scale(scale, scale);
+  ctx.fillStyle = cssVar("--bg", "#1b1e24");
+  ctx.fillRect(0, 0, gr.width, height);
+  cards.forEach((card, i) => {
+    const r = card.getBoundingClientRect();
+    const x = r.left - gr.left;
+    const y = r.top - gr.top;
+    ctx.fillStyle = cssVar("--bg2", "#23272f");
+    ctx.strokeStyle = cssVar("--border", "#3a404d");
+    roundRectPath(ctx, x, y, r.width, r.height, 6);
+    ctx.fill();
+    ctx.stroke();
+    const h4 = card.querySelector("h4");
+    ctx.fillStyle = cssVar("--text", "#d7dce3");
+    ctx.font = "bold 13px 'Yu Gothic UI', sans-serif";
+    ctx.fillText(h4 && h4.firstChild ? h4.firstChild.textContent : "", x + 10, y + 20, r.width - 20);
+    const cv = card.querySelector("canvas");
+    if (cv && !cv.classList.contains("hidden") && cv.width) {
+      const cr = cv.getBoundingClientRect();
+      ctx.drawImage(cv, cr.left - gr.left, cr.top - gr.top, cr.width, cr.height);
+    } else {
+      drawTableInto(ctx, charts[i], { x: x + 10, y: y + 30, w: r.width - 20, h: r.height - 40 });
+    }
+  });
+  const name = $("project-name").textContent || "dashboard";
+  downloadDataUrl(out.toDataURL("image/png"), `${safeFilename(name)}_${tsStamp()}.png`);
+  setStatus("ダッシュボードをPNGで保存しました");
+}
+
+/** HTMLレポート用: クエリ結果を静的な<table>にする */
+function htmlTable(result, cap) {
+  if (!result) return '<p class="muted">(データ未取得)</p>';
+  const head = result.columns.map((c) => `<th>${esc(c)}</th>`).join("");
+  const body = result.rows
+    .slice(0, cap)
+    .map((row) => `<tr>${row.map((v) => `<td>${v === null ? "" : esc(String(v))}</td>`).join("")}</tr>`)
+    .join("");
+  const note = result.rows.length > cap ? `<p class="muted">先頭${cap}行のみ表示(全${result.rows.length}行)</p>` : "";
+  return `<div class="twrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${note}`;
+}
+
+/** ダッシュボードを自己完結HTML(画像埋め込み・オフラインで開ける)として保存 */
+function exportDashHtml() {
+  const grid = $("dash-grid");
+  const cards = [...grid.querySelectorAll(".dash-card")];
+  if (!cards.length) {
+    setStatus("ダッシュボードにチャートがありません", true);
+    return;
+  }
+  const name = $("project-name").textContent || "ダッシュボード";
+  const filters = dashFilters.length
+    ? `<p class="muted">適用フィルタ: ${esc(dashFilters.map((f) => `${f.col} ∈ {${f.values.join(", ")}}`).join(" / "))}</p>`
+    : "";
+  const cardsHtml = cards
+    .map((card, i) => {
+      const spec = charts[i];
+      const layout = spec ? chartLayout(spec) : { w: 1 };
+      const title = spec ? esc(spec.name) : "";
+      const cv = card.querySelector("canvas");
+      const body =
+        cv && !cv.classList.contains("hidden") && cv.width
+          ? `<img src="${opaquePngDataUrl(cv)}" alt="${title}">`
+          : htmlTable(spec ? dashCache.get(spec.id) : null, 200);
+      return `<div class="card${layout.w === 2 ? " wide" : ""}"><h2>${title}</h2>${body}</div>`;
+    })
+    .join("\n");
+  const html = `<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>${esc(name)}</title>
+<style>
+  body { margin: 0; padding: 20px; background: ${cssVar("--bg", "#1b1e24")}; color: ${cssVar("--text", "#d7dce3")};
+         font-family: 'Yu Gothic UI', 'Hiragino Sans', sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .muted { color: ${cssVar("--muted", "#8b93a1")}; font-size: 12px; margin: 2px 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; margin-top: 16px; }
+  .card { background: ${cssVar("--bg2", "#23272f")}; border: 1px solid ${cssVar("--border", "#3a404d")};
+          border-radius: 6px; padding: 12px; }
+  .card.wide { grid-column: 1 / -1; }
+  .card h2 { font-size: 14px; margin: 0 0 8px; }
+  .card img { width: 100%; height: auto; border-radius: 4px; }
+  .twrap { max-height: 420px; overflow: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  th, td { border: 1px solid ${cssVar("--border", "#3a404d")}; padding: 3px 8px; text-align: left; }
+  th { background: ${cssVar("--bg3", "#2b303a")}; position: sticky; top: 0; }
+</style>
+</head>
+<body>
+<h1>${esc(name)}</h1>
+<p class="muted">Kohaku Studio エクスポート ${new Date().toLocaleString("ja-JP")}</p>
+${filters}
+<div class="grid">
+${cardsHtml}
+</div>
+</body>
+</html>
+`;
+  const blob = new Blob([html], { type: "text/html" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${safeFilename(name)}_${tsStamp()}.html`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  setStatus("ダッシュボードをHTMLレポートで保存しました");
+}
+
 // ---------- プロジェクト ----------
 
 let projectMode = "save";
@@ -1857,6 +2084,9 @@ function init() {
   $("ch-sql").onchange = loadChartColumns;
   $("btn-ch-preview").onclick = previewChart;
   $("btn-ch-save").onclick = saveChart;
+  $("btn-ch-png").onclick = exportChartPng;
+  $("btn-dash-png").onclick = exportDashPng;
+  $("btn-dash-html").onclick = exportDashHtml;
   $("btn-ch-new").onclick = () => {
     editingChartId = null;
     $("ch-name").value = "";
