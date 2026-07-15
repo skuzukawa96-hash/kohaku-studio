@@ -39,6 +39,7 @@ cargo build --release
 kohaku-studio                       起動（ブラウザが自動で開く、既定ポート 5590）
 kohaku-studio --port 8080           ポート指定（使用中なら自動で次を探す）
 kohaku-studio --no-browser          ブラウザを開かない
+kohaku-studio --no-cache            Parquetキャッシュを使わない（常にソースから読み込む）
 kohaku-studio --make-samples DIR    動作確認用サンプルデータ（CSV / SQLite DB）を生成
 ```
 
@@ -65,7 +66,8 @@ kohaku-studio                            # 起動して ./samples のファイ�
 4. **分析タブ** — データプロファイル・回帰分析・クラスタリング（下記）
 5. **ダッシュボードタブ** — 保存済みチャートを一覧表示
 6. **保存 / 開く** — プロジェクトを `.kohaku` ファイル（中身はJSON）に保存・復元
-   （データ本体は含まず、元のソースファイルから再読み込みする）
+   （データ本体は含まず、元のソースファイルから再読み込みする。ソースが未変更なら
+   Parquetキャッシュから高速に復元される）
 
 ---
 
@@ -76,6 +78,20 @@ kohaku-studio                            # 起動して ./samples のファイ�
 | CSV | `.csv` `.tsv` `.txt` | UTF-8 / Shift-JIS 自動判別、区切り文字自動推定 |
 | Excel | `.xlsx` `.xlsm` `.xlsb` `.xls` `.ods` | シート選択、ヘッダー行指定、日付シリアル値→ISO文字列、数式は計算済み値 |
 | SQLite | `.db` `.sqlite` `.sqlite3` `.db3` | テーブル/ビュー一覧から選択（読み取り専用で開く） |
+
+---
+
+## Parquetキャッシュ（v0.3）
+
+ファイル系ソース（CSV / Excel / SQLite）の取り込み結果を Parquet 形式で自動キャッシュし、
+プロジェクトを開き直すときの再読み込みを高速化します（50万行CSVで約3倍）。
+
+- 保存先: `%LOCALAPPDATA%\kohaku-studio\cache\`（環境変数 `KOHAKU_CACHE_DIR` で変更可）
+- 無効化: ソースファイルの「サイズ + 更新時刻」が少しでも変わるとキャッシュは使われず、
+  ソースから読み直して自動的に作り直される（古いデータを見せない）
+- PostgreSQL / MySQL などのDB接続はサーバー側でデータが変わるためキャッシュ対象外
+- キャッシュの読み書きに失敗しても通常のソース読み込みにフォールバックする（動作は止まらない）
+- `--no-cache` で無効化できる。キャッシュフォルダは丸ごと削除しても安全
 
 ---
 
@@ -104,7 +120,7 @@ kohaku-studio                            # 起動して ./samples のファイ�
 | クレート | 責務 |
 | --- | --- |
 | `bi-core` | データモデル・Connector trait・Projectモデル |
-| `bi-connectors` | CSV / Excel(calamine) / SQLite コネクタ |
+| `bi-connectors` | CSV / Excel(calamine) / SQLite / PostgreSQL / MySQL コネクタ、Parquetキャッシュ |
 | `bi-analytics` | 統計・回帰・クラスタリング（純Rust・依存なし） |
 | `bi-app` | HTTPサーバー・クエリエンジン・分析API・内蔵UI |
 
@@ -141,7 +157,7 @@ cargo test
 
 一般的なノートPCでの目安です（環境により変動します）:
 
-- 実行ファイル: 約3MB、外部依存なし
+- 実行ファイル: 約10MB、外部依存なし
 - メモリ: 起動時 約10MB / 30万行（約7MBのCSV）ロード後 約20〜30MB
 - 30万行CSVのインポート: 数秒、フィルタ集計: 数十ミリ秒
 - よく使う列でのGROUP BYが遅い場合は、SQLタブで `CREATE INDEX idx_name ON table(col)` を

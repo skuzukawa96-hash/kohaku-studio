@@ -46,7 +46,7 @@ Cargo workspace の4クレート構成。依存方向は下から上への一方
 ```
 bi-app        HTTPサーバー(tiny_http) / SQLite in-memoryクエリエンジン / 分析API / 内蔵UI
   ├─ bi-analytics  記述統計・相関・OLS回帰・k-means++・統計検定（純Rust・依存はserdeのみ）
-  ├─ bi-connectors CSV / Excel(calamine) / SQLite / PostgreSQL / MySQL(sqlx) コネクタ + ConnectorRegistry
+  ├─ bi-connectors CSV / Excel(calamine) / SQLite / PostgreSQL / MySQL(sqlx) コネクタ + ConnectorRegistry + Parquetキャッシュ(arrow)
   └─ bi-core       TableData / DataType / Value / Connector trait / Project モデル・型推定
 ```
 
@@ -68,6 +68,7 @@ bi-app        HTTPサーバー(tiny_http) / SQLite in-memoryクエリエンジ�
 - `crates/bi-app/ui/` — 内蔵UI（vanilla JS + 自前Canvasレンダラ、約2,000行の `app.js`）。`include_str!` でバイナリに埋め込まれるため、**UIの変更も再ビルドが必要**。JSライブラリの追加は不可（オフライン完結・依存ゼロ）。注意: incrementalビルドが `ui/*.js` の変更を拾わないことがある。UI変更が反映されない時は `ui/` 配下のファイルを touch してからビルドするか `cargo clean -p bi-app` する。
 - `crates/bi-analytics/src/` — `lib.rs`（統計・回帰・k-means++）、`htest.rs`（統計検定・効果量・多重比較）、`distributions.rs`（p値計算）、`advisor.rs`（検定の自動提案）。**このクレートは外部依存なし（serdeのみ）を維持する。**
 - `crates/bi-core/src/lib.rs` — `TableData` / `DataType` / `Value` / `Connector` trait / `BiResult`。
+- `crates/bi-connectors/src/parquet_cache.rs` — Parquetキャッシュ（v0.3）。ファイル系ソースの取り込み結果を `%LOCALAPPDATA%\kohaku-studio\cache\` に保存し、ソース未変更（サイズ+更新時刻一致）なら再パースせず復元する。キャッシュ失敗は常にソース読み込みへフォールバックし、ユーザーを止めない。DB接続は対象外。`--no-cache` で無効化。
 
 ### 拡張ポイント
 

@@ -5,6 +5,7 @@
 //!   kohaku-studio.exe                    ... 起動(ブラウザ自動オープン、ポート5590)
 //!   kohaku-studio.exe --port 8080        ... ポート指定
 //!   kohaku-studio.exe --no-browser      ... ブラウザを開かない
+//!   kohaku-studio.exe --no-cache        ... Parquetキャッシュを使わない
 //!   kohaku-studio.exe --make-samples DIR ... サンプルデータ(CSV/SQLite)を生成
 
 mod analysis;
@@ -15,6 +16,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut port: u16 = 5590;
     let mut open_browser = true;
+    let mut use_cache = true;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -25,6 +27,7 @@ fn main() {
                 i += 1;
             }
             "--no-browser" => open_browser = false,
+            "--no-cache" => use_cache = false,
             "--make-samples" => {
                 let dir = args.get(i + 1).cloned().unwrap_or_else(|| ".".to_string());
                 match make_samples(&dir) {
@@ -34,14 +37,16 @@ fn main() {
                 return;
             }
             "--help" | "-h" => {
-                println!("kohaku-studio [--port N] [--no-browser] [--make-samples DIR]");
+                println!(
+                    "kohaku-studio [--port N] [--no-browser] [--no-cache] [--make-samples DIR]"
+                );
                 return;
             }
             _ => {}
         }
         i += 1;
     }
-    if let Err(e) = server::run(port, open_browser) {
+    if let Err(e) = server::run(port, open_browser, use_cache) {
         eprintln!("起動エラー: {e}");
         std::process::exit(1);
     }

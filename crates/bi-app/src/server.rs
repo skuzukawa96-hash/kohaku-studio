@@ -24,10 +24,12 @@ pub struct AppState {
     pub charts: Vec<Json>,
     pub queries: Vec<String>,
     pub project_name: String,
+    /// Parquetキャッシュの有効/無効(--no-cache で無効化)
+    pub use_cache: bool,
 }
 
 impl AppState {
-    pub fn new() -> BiResult<AppState> {
+    pub fn new(use_cache: bool) -> BiResult<AppState> {
         Ok(AppState {
             engine: Engine::new()?,
             registry: ConnectorRegistry::new(),
@@ -35,12 +37,13 @@ impl AppState {
             charts: Vec::new(),
             queries: Vec::new(),
             project_name: "無題プロジェクト".to_string(),
+            use_cache,
         })
     }
 }
 
-pub fn run(port: u16, open_browser: bool) -> BiResult<()> {
-    let mut state = AppState::new()?;
+pub fn run(port: u16, open_browser: bool, use_cache: bool) -> BiResult<()> {
+    let mut state = AppState::new(use_cache)?;
     let mut bound_port = port;
     let server = {
         let mut srv = None;
@@ -269,6 +272,31 @@ fn api_objects(state: &AppState, req: &Json) -> BiResult<Json> {
     }))
 }
 
+/// Parquetキャッシュ付きロード。有効なキャッシュがあればそこから復元し、
+/// ミスならコネクタで読み込んでキャッシュへ書き戻す(Cache-Aside方式)。
+/// 戻り値の bool はキャッシュヒットしたかどうか。
+fn load_with_cache(
+    state: &AppState,
+    path: &Path,
+    object: &str,
+    opts: &ImportOptions,
+) -> BiResult<(TableData, bool)> {
+    if state.use_cache {
+        if let Some(td) = bi_connectors::parquet_cache::load(path, object, opts) {
+            return Ok((td, true));
+        }
+    }
+    let conn = connector_for(state, path)?;
+    let td = conn.load(path, object, opts)?;
+    if state.use_cache {
+        // キャッシュ書き込みの失敗でインポートを止めない(高速化はベストエフォート)
+        if let Err(e) = bi_connectors::parquet_cache::store(path, object, opts, &td) {
+            eprintln!("Parquetキャッシュの保存に失敗(処理は継続): {e}");
+        }
+    }
+    Ok((td, false))
+}
+
 fn parse_options(req: &Json) -> ImportOptions {
     req.get("options")
         .and_then(|o| serde_json::from_value(o.clone()).ok())
@@ -312,9 +340,11 @@ fn api_import(state: &mut AppState, req: &Json) -> BiResult<Json> {
         Some(n) => Some(n.min(MAX_IMPORT_ROWS)),
         None => Some(MAX_IMPORT_ROWS),
     };
-    let conn = connector_for(state, &path)?;
-    let td = conn.load(&path, &object, &opts)?;
+    let (td, from_cache) = load_with_cache(state, &path, &object, &opts)?;
     let row_count = td.rows.len();
+    if from_cache {
+        println!("データセット「{name}」をParquetキャッシュから復元({row_count}行)");
+    }
     state.engine.register(&name, &td)?;
     let def = DatasetDef {
         name: name.clone(),
@@ -427,6 +457,7 @@ fn api_project_load(state: &mut AppState, req: &Json) -> BiResult<Json> {
     state.project_name = project.name;
 
     let mut errors: Vec<String> = Vec::new();
+    let mut cached_count = 0usize;
     for def in project.datasets {
         if def.path.starts_with('(') {
             errors.push(format!(
@@ -438,13 +469,19 @@ fn api_project_load(state: &mut AppState, req: &Json) -> BiResult<Json> {
         let p = PathBuf::from(&def.path);
         let mut opts = def.options.clone();
         opts.max_rows = Some(MAX_IMPORT_ROWS);
-        let load_result = connector_for(state, &p).and_then(|c| c.load(&p, &def.object, &opts));
-        match load_result {
-            Ok(td) => {
+        match load_with_cache(state, &p, &def.object, &opts) {
+            Ok((td, from_cache)) => {
                 let rows = td.rows.len();
                 if let Err(e) = state.engine.register(&def.name, &td) {
                     errors.push(format!("{}: {}", def.name, e));
                 } else {
+                    if from_cache {
+                        cached_count += 1;
+                        println!(
+                            "データセット「{}」をParquetキャッシュから復元({rows}行)",
+                            def.name
+                        );
+                    }
                     state.datasets.push(DatasetDef {
                         row_count: rows,
                         schema: Some(td.schema),
@@ -462,5 +499,6 @@ fn api_project_load(state: &mut AppState, req: &Json) -> BiResult<Json> {
         "charts": state.charts,
         "queries": state.queries,
         "errors": errors,
+        "cached_datasets": cached_count,
     }))
 }

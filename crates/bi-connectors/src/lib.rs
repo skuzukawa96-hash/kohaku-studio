@@ -4,6 +4,7 @@
 mod csv_conn;
 mod db_conn;
 mod excel_conn;
+pub mod parquet_cache;
 mod sqlite_conn;
 
 pub use csv_conn::CsvConnector;
