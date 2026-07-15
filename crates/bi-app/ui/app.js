@@ -1006,6 +1006,21 @@ async function anLoadColumns() {
   };
   mkChecklist($("reg-x"));
   mkChecklist($("clu-x"));
+  // 時系列分解: 時間列は全列から、値の列は数値列から選ぶ
+  const fillCols = (id, cols) => {
+    const sel = $(id);
+    const cur = sel.value;
+    sel.innerHTML = "";
+    for (const c of cols) {
+      const op = document.createElement("option");
+      op.value = c.name;
+      op.textContent = c.name;
+      sel.appendChild(op);
+    }
+    if (cur && cols.some((c) => c.name === cur)) sel.value = cur;
+  };
+  fillCols("ts-x", anColumns);
+  fillCols("ts-y", numCols);
   renderTestSelects();
   if (!numCols.length) $("an-cols-msg").textContent = "数値列がありません(ソースを選択してください)";
 }
@@ -1555,6 +1570,135 @@ function drawClusterScatter() {
     ylab: lastCluster.features[yi],
     colored: true,
   });
+}
+
+// ---------- 時系列分解 ----------
+
+async function runTimeseries() {
+  const out = $("ts-out");
+  const req = {
+    source: anGetSource(),
+    x: $("ts-x").value,
+    y: $("ts-y").value,
+    period: parseInt($("ts-period").value, 10) || 7,
+    model: $("ts-model").value,
+    agg: $("ts-agg").value,
+  };
+  out.innerHTML = '<div class="hint">分解中...</div>';
+  try {
+    const r = await api("/api/analyze/timeseries", req);
+    const judge = (v) => (v >= 0.6 ? "強い" : v >= 0.3 ? "中程度" : "弱い");
+    let html = metricHtml([
+      ["トレンド強度", `${fmtNum(r.trend_strength, 2)}(${judge(r.trend_strength)})`],
+      ["季節性強度", `${fmtNum(r.seasonal_strength, 2)}(${judge(r.seasonal_strength)})`],
+      ["使用時点数", r.n_used.toLocaleString() + (r.dropped ? `(除外 ${r.dropped}行)` : "")],
+      ["周期", r.period],
+    ]);
+    html += '<div class="table-wrap"><table class="grid"><thead><tr><th>位相(周期内の位置)</th>';
+    r.seasonal_pattern.forEach((_, i) => (html += `<th>${i + 1}</th>`));
+    html += "</tr></thead><tbody><tr><td>季節成分</td>";
+    r.seasonal_pattern.forEach((v) => (html += `<td class="num">${fmtNum(v, 3)}</td>`));
+    html += "</tr></tbody></table></div>";
+    html +=
+      '<div class="hint">強度は0〜1(1に近いほど成分が支配的)。両端のトレンド・残差は移動平均の性質上、計算対象外です。' +
+      (r.sampled ? "表示は間引いています(分解は全時点で実行済み)。" : "") +
+      "</div>";
+    out.innerHTML = html;
+    drawDecomposition($("ts-canvas"), r);
+  } catch (e) {
+    $("ts-canvas").classList.add("hidden");
+    out.innerHTML = `<div class="hint error">${esc(e.message)}</div>`;
+  }
+}
+
+/** 分解結果を3段(観測+トレンド / 季節成分 / 残差)で描画する */
+function drawDecomposition(canvas, r) {
+  canvas.classList.remove("hidden");
+  const { ctx, w, h } = setupCanvas(canvas);
+  const C = CHART_COLORS;
+  const m = { l: 64, r: 12, t: 20, b: 34, gapY: 30 };
+  const n = r.observed.length;
+  const px = (i) => m.l + (n <= 1 ? 0 : (i / (n - 1)) * (w - m.l - m.r));
+  const panelH = (h - m.t - m.b - m.gapY * 2) / 3;
+
+  const drawPanel = (pi, title, seriesList, zeroLine) => {
+    const top = m.t + pi * (panelH + m.gapY);
+    let vals = seriesList.flatMap((s) => s.data.filter((v) => v !== null));
+    if (!vals.length) vals = [0, 1];
+    const ticks = niceTicks(Math.min(...vals), Math.max(...vals), 3);
+    const yMin = ticks[0];
+    const yMax = ticks[ticks.length - 1];
+    const py = (v) => top + panelH - ((v - yMin) / (yMax - yMin || 1)) * panelH;
+    ctx.strokeStyle = C.grid;
+    ctx.fillStyle = C.text;
+    ctx.textAlign = "right";
+    for (const t of ticks) {
+      ctx.beginPath();
+      ctx.moveTo(m.l, py(t));
+      ctx.lineTo(w - m.r, py(t));
+      ctx.stroke();
+      ctx.fillText(fmtTick(t), m.l - 6, py(t) + 4);
+    }
+    ctx.textAlign = "left";
+    ctx.fillStyle = C.text;
+    ctx.fillText(title, m.l, top - 7);
+    if (zeroLine !== undefined && zeroLine >= yMin && zeroLine <= yMax) {
+      ctx.strokeStyle = C.text;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(m.l, py(zeroLine));
+      ctx.lineTo(w - m.r, py(zeroLine));
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    for (const s of seriesList) {
+      if (s.points) {
+        ctx.fillStyle = s.color;
+        s.data.forEach((v, i) => {
+          if (v === null) return;
+          ctx.beginPath();
+          ctx.arc(px(i), py(v), 1.5, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      } else {
+        ctx.strokeStyle = s.color;
+        ctx.lineWidth = s.width || 1.5;
+        ctx.beginPath();
+        let pen = false; // nullで線を切る(トレンド両端のNaN対策)
+        s.data.forEach((v, i) => {
+          if (v === null) {
+            pen = false;
+            return;
+          }
+          if (pen) ctx.lineTo(px(i), py(v));
+          else ctx.moveTo(px(i), py(v));
+          pen = true;
+        });
+        ctx.stroke();
+        ctx.lineWidth = 1;
+      }
+    }
+  };
+
+  drawPanel(0, "観測値", [
+    { data: r.observed, color: "#5a6373" },
+    { data: r.trend, color: C.accent, width: 2 },
+  ]);
+  ctx.fillStyle = C.accent;
+  ctx.fillText("── トレンド", m.l + 70, m.t - 7);
+  drawPanel(1, "季節成分", [{ data: r.seasonal, color: C.accent2 }]);
+  drawPanel(2, "残差", [{ data: r.residual, color: "#e0a15c", points: true }],
+    r.model === "multiplicative" ? 1 : 0);
+
+  // X軸ラベル(最下段の下に数個)
+  ctx.fillStyle = C.text;
+  ctx.textAlign = "center";
+  const nticks = Math.min(6, n);
+  for (let t = 0; t < nticks; t++) {
+    const i = Math.round((t / Math.max(1, nticks - 1)) * (n - 1));
+    ctx.fillText(String(r.labels[i]), px(i), h - m.b + 16);
+  }
+  ctx.textAlign = "left";
 }
 
 // 汎用散布図(回帰線・対角線・クラスタ色分け対応)
@@ -2199,6 +2343,7 @@ function init() {
   $("btn-an-reg").onclick = runRegression;
   $("btn-an-clu").onclick = () => runCluster();
   $("btn-clu-elbow").onclick = suggestClusterK;
+  $("btn-an-ts").onclick = runTimeseries;
   $("btn-clu-save").onclick = () => {
     const name = $("clu-save-name").value.trim();
     if (!name) { setStatus("保存名を入力してください", true); return; }

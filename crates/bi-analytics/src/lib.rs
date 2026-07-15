@@ -515,6 +515,160 @@ fn sq_dist(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| (x - y) * (x - y)).sum()
 }
 
+// ---------- 時系列分解(古典的分解) ----------
+
+/// 時系列分解の結果。系列は入力と同じ長さで、移動平均が計算できない
+/// 両端の trend / residual は NaN になる。
+#[derive(Debug, Clone, Serialize)]
+pub struct DecomposeResult {
+    pub trend: Vec<f64>,
+    pub seasonal: Vec<f64>,
+    pub residual: Vec<f64>,
+    /// 1周期分の季節パターン(位相 0..period-1)。加法は平均0、乗法は平均1に正規化
+    pub seasonal_pattern: Vec<f64>,
+    /// トレンド強度 Ft = max(0, 1 - Var(R)/Var(T+R))。0〜1
+    pub trend_strength: f64,
+    /// 季節性強度 Fs = max(0, 1 - Var(R)/Var(S+R))。0〜1
+    pub seasonal_strength: f64,
+}
+
+/// 古典的分解: 観測値をトレンド・季節成分・残差に分ける。
+/// y は等間隔の系列(NaNなし)、period は季節の周期(日次の週周期=7 など)。
+/// multiplicative=true で乗法モデル(y = T×S×R、正の値のみ)。
+pub fn decompose(
+    y: &[f64],
+    period: usize,
+    multiplicative: bool,
+) -> Result<DecomposeResult, String> {
+    let n = y.len();
+    if period < 2 {
+        return Err("周期は2以上を指定してください".to_string());
+    }
+    if n < period * 2 {
+        return Err(format!(
+            "データ数({n})が不足しています(周期{period}の2倍以上必要)"
+        ));
+    }
+    if y.iter().any(|v| !v.is_finite()) {
+        return Err("欠損を含む系列は分解できません(事前に除外・補完してください)".to_string());
+    }
+    if multiplicative && y.iter().any(|&v| v <= 0.0) {
+        return Err(
+            "乗法モデルは正の値の系列のみ対応です(0以下を含む場合は加法モデルを使用してください)"
+                .to_string(),
+        );
+    }
+
+    // トレンド: 中心化移動平均。周期が偶数のときは両端を半分の重みにして
+    // 中心を合わせる(2×m移動平均)。計算できない両端は NaN のまま。
+    let half = period / 2;
+    let mut trend = vec![f64::NAN; n];
+    for i in half..n - half {
+        trend[i] = if period % 2 == 1 {
+            y[i - half..=i + half].iter().sum::<f64>() / period as f64
+        } else {
+            let inner: f64 = y[i - half + 1..i + half].iter().sum();
+            (0.5 * y[i - half] + inner + 0.5 * y[i + half]) / period as f64
+        };
+    }
+
+    // 季節成分: トレンド除去後の値を位相(i % period)ごとに平均する
+    let mut sums = vec![0.0f64; period];
+    let mut counts = vec![0usize; period];
+    for i in 0..n {
+        if trend[i].is_finite() {
+            let d = if multiplicative {
+                y[i] / trend[i]
+            } else {
+                y[i] - trend[i]
+            };
+            sums[i % period] += d;
+            counts[i % period] += 1;
+        }
+    }
+    let mut pattern: Vec<f64> = (0..period)
+        .map(|p| {
+            if counts[p] > 0 {
+                sums[p] / counts[p] as f64
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    // 正規化: 季節成分の合計がトレンドに混ざらないよう、加法は平均0・乗法は平均1にする
+    let mean = pattern.iter().sum::<f64>() / period as f64;
+    for v in pattern.iter_mut() {
+        if multiplicative {
+            *v /= if mean.abs() > 1e-12 { mean } else { 1.0 };
+        } else {
+            *v -= mean;
+        }
+    }
+
+    let seasonal: Vec<f64> = (0..n).map(|i| pattern[i % period]).collect();
+    let residual: Vec<f64> = (0..n)
+        .map(|i| {
+            if !trend[i].is_finite() {
+                f64::NAN
+            } else if multiplicative {
+                y[i] / (trend[i] * seasonal[i])
+            } else {
+                y[i] - trend[i] - seasonal[i]
+            }
+        })
+        .collect();
+
+    // 強度指標(Hyndman)。乗法モデルでも比較可能にするため、加法的な
+    // 等価残差 R = y - T×S で統一して分散比を取る
+    let mut tr = Vec::new(); // T + R
+    let mut sr = Vec::new(); // S + R
+    let mut rr = Vec::new(); // R
+    for i in 0..n {
+        if !trend[i].is_finite() {
+            continue;
+        }
+        let (s_add, r_add) = if multiplicative {
+            (
+                trend[i] * seasonal[i] - trend[i],
+                y[i] - trend[i] * seasonal[i],
+            )
+        } else {
+            (seasonal[i], residual[i])
+        };
+        tr.push(trend[i] + r_add);
+        sr.push(s_add + r_add);
+        rr.push(r_add);
+    }
+    let strength = |denom: &[f64]| {
+        let vd = variance(denom);
+        if vd < 1e-12 {
+            0.0
+        } else {
+            (1.0 - variance(&rr) / vd).max(0.0)
+        }
+    };
+    let trend_strength = strength(&tr);
+    let seasonal_strength = strength(&sr);
+
+    Ok(DecomposeResult {
+        trend,
+        seasonal,
+        residual,
+        seasonal_pattern: pattern,
+        trend_strength,
+        seasonal_strength,
+    })
+}
+
+/// 母分散
+fn variance(v: &[f64]) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    let mean = v.iter().sum::<f64>() / v.len() as f64;
+    v.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / v.len() as f64
+}
+
 struct XorShift64 {
     state: u64,
 }
@@ -667,5 +821,77 @@ mod tests {
         let r = elbow(&rows, 8, 42).unwrap();
         assert_eq!(r.suggested_k, 2);
         assert!(r.inertias[0].abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_decompose_additive_exact() {
+        // 線形トレンド + 平均0の季節パターンは、中心化移動平均で厳密に復元できる
+        let pattern = [3.0, -1.0, -2.0, 0.0];
+        let y: Vec<f64> = (0..40)
+            .map(|i| 10.0 + 0.5 * i as f64 + pattern[i % 4])
+            .collect();
+        let r = decompose(&y, 4, false).unwrap();
+        for (p, expected) in pattern.iter().enumerate() {
+            assert!(
+                (r.seasonal_pattern[p] - expected).abs() < 1e-9,
+                "位相{p}: {} != {expected}",
+                r.seasonal_pattern[p]
+            );
+        }
+        // トレンドは 10 + 0.5i に一致(定義域内)、残差はほぼ0
+        assert!((r.trend[10] - 15.0).abs() < 1e-9);
+        for i in 0..40 {
+            if r.residual[i].is_finite() {
+                assert!(r.residual[i].abs() < 1e-9);
+            }
+        }
+        assert!(r.trend_strength > 0.99);
+        assert!(r.seasonal_strength > 0.99);
+        // 両端(half=2)の trend は NaN
+        assert!(r.trend[0].is_nan() && r.trend[39].is_nan());
+        assert!(r.trend[2].is_finite() && r.trend[37].is_finite());
+    }
+
+    #[test]
+    fn test_decompose_multiplicative() {
+        // 乗法: y = トレンド × 季節係数(平均1)
+        let factor = [1.2, 0.9, 0.8, 1.1];
+        let y: Vec<f64> = (0..48)
+            .map(|i| (100.0 + i as f64) * factor[i % 4])
+            .collect();
+        let r = decompose(&y, 4, true).unwrap();
+        for (p, expected) in factor.iter().enumerate() {
+            assert!(
+                (r.seasonal_pattern[p] - expected).abs() < 0.02,
+                "位相{p}: {}",
+                r.seasonal_pattern[p]
+            );
+        }
+        assert!(r.seasonal_strength > 0.95);
+        // 乗法の残差は1近傍
+        assert!(r
+            .residual
+            .iter()
+            .filter(|v| v.is_finite())
+            .all(|v| (v - 1.0).abs() < 0.05));
+    }
+
+    #[test]
+    fn test_decompose_no_seasonality() {
+        // 純粋な線形トレンド → 季節性強度はほぼ0
+        let y: Vec<f64> = (0..30).map(|i| 5.0 + 2.0 * i as f64).collect();
+        let r = decompose(&y, 7, false).unwrap();
+        assert!(r.seasonal_strength < 0.05, "Fs={}", r.seasonal_strength);
+        assert!(r.trend_strength > 0.99);
+    }
+
+    #[test]
+    fn test_decompose_errors() {
+        let y: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        assert!(decompose(&y, 1, false).is_err()); // 周期が小さすぎる
+        assert!(decompose(&y, 6, false).is_err()); // データ数不足(6*2 > 10)
+        assert!(decompose(&[1.0, f64::NAN, 3.0, 4.0], 2, false).is_err()); // 欠損
+        let neg: Vec<f64> = (0..12).map(|i| i as f64 - 5.0).collect();
+        assert!(decompose(&neg, 3, true).is_err()); // 乗法に0以下
     }
 }

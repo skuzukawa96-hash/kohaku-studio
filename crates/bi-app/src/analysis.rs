@@ -281,6 +281,102 @@ pub fn api_regression(state: &mut AppState, req: &Json) -> BiResult<Json> {
     }))
 }
 
+// ---------- 時系列分解 ----------
+
+/// 時系列分解API。時間列でソート(同一時点は集約)した系列を
+/// 等間隔とみなし、トレンド・季節成分・残差に分解する。
+pub fn api_timeseries(state: &mut AppState, req: &Json) -> BiResult<Json> {
+    let x_col = s(req, "x");
+    let y_col = s(req, "y");
+    if x_col.is_empty() || y_col.is_empty() {
+        return Err("時間列と値の列を指定してください".to_string());
+    }
+    if x_col == y_col {
+        return Err("時間列と値の列には別の列を指定してください".to_string());
+    }
+    let period = req
+        .get("period")
+        .and_then(|x| x.as_u64())
+        .unwrap_or(7)
+        .clamp(2, 366) as usize;
+    let multiplicative = s(req, "model") == "multiplicative";
+    let use_avg = s(req, "agg") == "avg";
+
+    let result = resolve_source(state, req)?;
+    let xi = col_index(&result, &x_col)?;
+    let yi = col_index(&result, &y_col)?;
+    let ys = col_f64(&result, yi);
+
+    // (ソートキー, ラベル, y)。時間列がNULL・値が非数値の行は除外する
+    let mut all_numeric = true;
+    let mut items: Vec<(Option<f64>, String, f64)> = Vec::new();
+    for (i, y) in ys.iter().enumerate() {
+        let xv = &result.rows[i][xi];
+        if matches!(xv, Value::Null) || !y.is_finite() {
+            continue;
+        }
+        let (num, label) = match xv {
+            Value::Int(v) => (Some(*v as f64), v.to_string()),
+            Value::Float(v) => (Some(*v), v.to_string()),
+            Value::Bool(b) => (Some(*b as i64 as f64), b.to_string()),
+            Value::Text(t) => (None, t.clone()),
+            Value::Null => unreachable!(),
+        };
+        if num.is_none() {
+            all_numeric = false;
+        }
+        items.push((num, label, *y));
+    }
+    let dropped = ys.len() - items.len();
+    // 数値列は数値順、それ以外は文字列順(ISO形式の日付はこれで時系列順になる)
+    if all_numeric {
+        items.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    } else {
+        items.sort_by(|a, b| a.1.cmp(&b.1));
+    }
+
+    // 同一時点の集約(合計または平均)。ソート済みなので隣接比較でよい
+    let mut labels: Vec<String> = Vec::new();
+    let mut series: Vec<f64> = Vec::new();
+    let mut counts: Vec<usize> = Vec::new();
+    for (_, label, y) in items {
+        if labels.last() == Some(&label) {
+            *series.last_mut().unwrap() += y;
+            *counts.last_mut().unwrap() += 1;
+        } else {
+            labels.push(label);
+            series.push(y);
+            counts.push(1);
+        }
+    }
+    if use_avg {
+        for (v, c) in series.iter_mut().zip(&counts) {
+            *v /= *c as f64;
+        }
+    }
+
+    let r = bi_analytics::decompose(&series, period, multiplicative)?;
+
+    // ペイロード上限: 1500点を超える場合は間引いて返す(分解自体は全点で実施済み)
+    let step = (series.len() / 1500).max(1);
+    let take = |v: &[f64]| -> Vec<Json> { v.iter().step_by(step).map(|x| round4(*x)).collect() };
+    Ok(json!({
+        "labels": labels.iter().step_by(step).collect::<Vec<_>>(),
+        "observed": take(&series),
+        "trend": take(&r.trend),
+        "seasonal": take(&r.seasonal),
+        "residual": take(&r.residual),
+        "seasonal_pattern": r.seasonal_pattern.iter().map(|v| round4(*v)).collect::<Vec<_>>(),
+        "trend_strength": round4(r.trend_strength),
+        "seasonal_strength": round4(r.seasonal_strength),
+        "n_used": series.len(),
+        "dropped": dropped,
+        "period": period,
+        "model": if multiplicative { "multiplicative" } else { "additive" },
+        "sampled": step > 1,
+    }))
+}
+
 // ---------- クラスタリング ----------
 
 /// エルボー法によるクラスタ数kの自動提案。
