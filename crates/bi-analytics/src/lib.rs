@@ -660,6 +660,106 @@ pub fn decompose(
     })
 }
 
+// ---------- SPC管理図(I管理図 + ネルソンルール) ----------
+
+/// 管理図のルール違反。rule: 1=3σ超え / 2=9点連続同側 / 3=6点連続増減
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SpcViolation {
+    pub index: usize,
+    pub rule: u8,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SpcResult {
+    /// 中心線(平均)
+    pub center: f64,
+    /// 移動範囲法によるσ推定(MR̄ / 1.128)
+    pub sigma: f64,
+    pub ucl: f64,
+    pub lcl: f64,
+    pub violations: Vec<SpcViolation>,
+}
+
+/// I管理図(個々の測定値の管理図)。
+/// σは標本標準偏差ではなく移動範囲(MR)法で推定する。標本標準偏差は
+/// 工程の平均シフトまで「ばらつき」に含めてしまい、管理限界が不当に
+/// 広がって異常を見逃すため(SPCの定石)。
+/// y は時系列順の測定値(NaNなし)。
+pub fn spc(y: &[f64]) -> Result<SpcResult, String> {
+    let n = y.len();
+    if n < 8 {
+        return Err(format!(
+            "データ数({n})が不足しています(管理図には8点以上必要)"
+        ));
+    }
+    if y.iter().any(|v| !v.is_finite()) {
+        return Err("欠損を含む系列は管理図にできません(事前に除外・補完してください)".to_string());
+    }
+    let center = y.iter().sum::<f64>() / n as f64;
+    // 移動範囲の平均。d2定数(部分群サイズ2)= 1.128 で割ってσを推定する
+    let mr_bar = y.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f64>() / (n - 1) as f64;
+    let sigma = mr_bar / 1.128;
+    let ucl = center + 3.0 * sigma;
+    let lcl = center - 3.0 * sigma;
+
+    let mut violations = Vec::new();
+    // ルール1: 管理限界(±3σ)の外
+    for (i, &v) in y.iter().enumerate() {
+        if v > ucl || v < lcl {
+            violations.push(SpcViolation { index: i, rule: 1 });
+        }
+    }
+    // ルール2: 9点連続で中心線の同じ側(中心線上の点は連続を断ち切る)
+    let mut run_side = 0i8; // +1 / -1 / 0
+    let mut run_len = 0usize;
+    for (i, &v) in y.iter().enumerate() {
+        let side = if v > center {
+            1
+        } else if v < center {
+            -1
+        } else {
+            0
+        };
+        if side != 0 && side == run_side {
+            run_len += 1;
+        } else {
+            run_side = side;
+            run_len = if side == 0 { 0 } else { 1 };
+        }
+        if run_len >= 9 {
+            violations.push(SpcViolation { index: i, rule: 2 });
+        }
+    }
+    // ルール3: 6点連続で増加または減少(5回連続の同方向変化)
+    let mut dir = 0i8;
+    let mut steps = 0usize;
+    for i in 1..n {
+        let d = if y[i] > y[i - 1] {
+            1
+        } else if y[i] < y[i - 1] {
+            -1
+        } else {
+            0
+        };
+        if d != 0 && d == dir {
+            steps += 1;
+        } else {
+            dir = d;
+            steps = if d == 0 { 0 } else { 1 };
+        }
+        if steps >= 5 {
+            violations.push(SpcViolation { index: i, rule: 3 });
+        }
+    }
+    Ok(SpcResult {
+        center,
+        sigma,
+        ucl,
+        lcl,
+        violations,
+    })
+}
+
 /// 母分散
 fn variance(v: &[f64]) -> f64 {
     if v.is_empty() {
@@ -883,6 +983,64 @@ mod tests {
         let r = decompose(&y, 7, false).unwrap();
         assert!(r.seasonal_strength < 0.05, "Fs={}", r.seasonal_strength);
         assert!(r.trend_strength > 0.99);
+    }
+
+    #[test]
+    fn test_spc_stable_no_violation() {
+        // 中心10の交互系列: どのルールも発火しない
+        let y: Vec<f64> = (0..20)
+            .map(|i| if i % 2 == 0 { 9.0 } else { 11.0 })
+            .collect();
+        let r = spc(&y).unwrap();
+        assert!((r.center - 10.0).abs() < 1e-9);
+        assert!((r.sigma - 2.0 / 1.128).abs() < 1e-9); // MR̄=2.0
+        assert!(r.violations.is_empty());
+    }
+
+    #[test]
+    fn test_spc_rule1_outlier() {
+        let mut y: Vec<f64> = (0..30)
+            .map(|i| if i % 2 == 0 { 9.5 } else { 10.5 })
+            .collect();
+        y[15] = 20.0; // 明確な外れ値
+        let r = spc(&y).unwrap();
+        assert_eq!(r.violations, vec![SpcViolation { index: 15, rule: 1 }]);
+        assert!(r.ucl < 20.0 && r.lcl > 0.0);
+    }
+
+    #[test]
+    fn test_spc_rule2_run_above_center() {
+        // 交互20点(最後は中心より下)のあと、中心よりわずかに上に9点連続。
+        // 直前の点が下側であることで、連続がちょうど9点で判定される
+        let mut y: Vec<f64> = (0..20)
+            .map(|i| if i % 2 == 0 { 11.0 } else { 9.0 })
+            .collect();
+        y.extend(std::iter::repeat_n(10.8, 9));
+        let r = spc(&y).unwrap();
+        assert_eq!(r.violations, vec![SpcViolation { index: 28, rule: 2 }]);
+    }
+
+    #[test]
+    fn test_spc_rule3_trend() {
+        // 交互14点のあと、6点連続の緩やかな増加(3σ内・9点未満)
+        let mut y: Vec<f64> = (0..14)
+            .map(|i| if i % 2 == 0 { 9.0 } else { 11.0 })
+            .collect();
+        for k in 1..=6 {
+            y.push(11.0 + 0.3 * k as f64);
+        }
+        let r = spc(&y).unwrap();
+        assert!(!r.violations.is_empty());
+        assert!(r.violations.iter().all(|v| v.rule == 3));
+        assert_eq!(r.violations.last().unwrap().index, 19);
+    }
+
+    #[test]
+    fn test_spc_errors() {
+        assert!(spc(&[1.0; 7]).is_err()); // 8点未満
+        let mut y = vec![1.0; 10];
+        y[3] = f64::NAN;
+        assert!(spc(&y).is_err()); // 欠損
     }
 
     #[test]

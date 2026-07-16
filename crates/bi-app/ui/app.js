@@ -533,13 +533,20 @@ function buildChartQuery(spec, filters) {
   }
 }
 
+/** チャートのデータ取得。通常はSQL(buildChartQuery)を実行するが、登録チャートは
+ *  fetch フック(分析API等を呼ぶ非同期処理)を持てる(SPC管理図が利用) */
+async function chartData(spec, filters) {
+  const reg = CHART_REGISTRY.get(spec.chart_type);
+  if (reg && reg.fetch) return reg.fetch(spec, filteredBase(spec, filters));
+  return api("/api/query", { sql: buildChartQuery(spec, filters), limit: 100000 });
+}
+
 async function previewChart() {
   const spec = chartSpecFromForm();
   $("chart-title").textContent = spec.name;
   $("chart-msg").textContent = "";
   try {
-    const sql = buildChartQuery(spec);
-    const r = await api("/api/query", { sql, limit: 100000 });
+    const r = await chartData(spec);
     drawChartInto($("chart-canvas"), $("chart-table"), spec, r);
   } catch (err) {
     $("chart-msg").textContent = err.message;
@@ -1081,6 +1088,105 @@ kohaku.registerChartType({
     ctx.fillText(H.fmtTick(vMax), sx + 18, sy + 8);
     ctx.fillText(H.fmtTick(vMin), sx + 18, sy + sh);
     ctx.fillText(`ダイ数: ${dies.length}`, m.l, h - 8);
+  },
+});
+
+// ---------- SPC管理図(v0.4) ----------
+// 管理限界(±3σ)とネルソンルール判定は Rust 側(/api/analyze/spc)で行い、
+// UIは描画だけを担当する(設計Rule 1)。SQLでは統計計算を表現できないため
+// buildQuery ではなく fetch フックを使う(Plugin API ドラフト6.1の拡張)。
+
+kohaku.registerChartType({
+  type: "spc",
+  label: "SPC管理図",
+  form: { x: "時間/順序列", value: "測定値", agg: true },
+  async fetch(spec, base) {
+    if (!spec.value) throw new Error("測定値の列を指定してください");
+    return api("/api/analyze/spc", {
+      source: { kind: "sql", sql: base },
+      x: spec.x,
+      value: spec.value,
+      // 同一時点の複数測定はサブグループとして平均が既定(合計のみ明示指定)
+      agg: spec.agg === "sum" ? "sum" : "avg",
+    });
+  },
+  render(ctx, w, h, spec, r, H) {
+    const n = r.values.length;
+    const m = { l: 60, r: 52, t: 16, b: 40 };
+    const pw = w - m.l - m.r;
+    const ph = h - m.t - m.b;
+    const yTicks = H.niceTicks(Math.min(r.lcl, ...r.values), Math.max(r.ucl, ...r.values), 5);
+    const yMin = yTicks[0];
+    const yMax = yTicks[yTicks.length - 1];
+    const px = (i) => m.l + (n <= 1 ? 0 : (i / (n - 1)) * pw);
+    const py = (v) => m.t + ph - ((v - yMin) / (yMax - yMin || 1)) * ph;
+
+    // グリッドと目盛り
+    ctx.strokeStyle = H.colors.grid;
+    ctx.fillStyle = H.colors.text;
+    ctx.textAlign = "right";
+    for (const t of yTicks) {
+      ctx.beginPath();
+      ctx.moveTo(m.l, py(t));
+      ctx.lineTo(m.l + pw, py(t));
+      ctx.stroke();
+      ctx.fillText(H.fmtTick(t), m.l - 6, py(t) + 4);
+    }
+    // 中心線と管理限界線(破線+右端にラベル)
+    const hline = (v, color, name) => {
+      ctx.strokeStyle = color;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.moveTo(m.l, py(v));
+      ctx.lineTo(m.l + pw, py(v));
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = color;
+      ctx.textAlign = "left";
+      ctx.fillText(name, m.l + pw + 4, py(v) + 4);
+    };
+    hline(r.ucl, "#e06c75", "UCL");
+    hline(r.center, H.colors.accent2, "CL");
+    hline(r.lcl, "#e06c75", "LCL");
+
+    // 測定値の折れ線と点(ルール違反の点は赤・大きめ)
+    ctx.strokeStyle = H.colors.accent;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    r.values.forEach((v, i) => (i ? ctx.lineTo(px(i), py(v)) : ctx.moveTo(px(i), py(v))));
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    const bad = new Set(r.violations.map((v) => v.index));
+    r.values.forEach((v, i) => {
+      ctx.beginPath();
+      ctx.arc(px(i), py(v), bad.has(i) ? 4 : 2, 0, Math.PI * 2);
+      ctx.fillStyle = bad.has(i) ? "#e06c75" : H.colors.accent;
+      ctx.fill();
+    });
+
+    // X軸ラベル(数個に間引き)
+    ctx.fillStyle = H.colors.text;
+    ctx.textAlign = "center";
+    const nt = Math.min(6, n);
+    for (let t = 0; t < nt; t++) {
+      const i = Math.round((t / Math.max(1, nt - 1)) * (n - 1));
+      ctx.fillText(String(r.labels[i]), px(i), m.t + ph + 16);
+    }
+
+    // 情報行(違反の内訳、なければσとn)
+    const ruleNames = { 1: "3σ超え", 2: "9点連続同側", 3: "6点連続増減" };
+    const byRule = {};
+    for (const v of r.violations) byRule[v.rule] = (byRule[v.rule] || 0) + 1;
+    const parts = Object.keys(byRule).map((k) => `ルール${k}(${ruleNames[k]}): ${byRule[k]}点`);
+    ctx.textAlign = "left";
+    ctx.fillStyle = r.violations.length ? "#e06c75" : H.colors.text;
+    ctx.fillText(
+      r.violations.length
+        ? `異常あり — ${parts.join(" / ")}`
+        : `異常なし(σ=${H.fmtTick(r.sigma)}, n=${r.n_used})`,
+      m.l,
+      h - 8
+    );
   },
 });
 
@@ -2134,7 +2240,7 @@ async function renderDashboard(force) {
     try {
       let r = dashCache.get(spec.id);
       if (!r) {
-        r = await api("/api/query", { sql: buildChartQuery(spec, applicable), limit: 100000 });
+        r = await chartData(spec, applicable);
         dashCache.set(spec.id, r);
       }
       if (seq !== dashRenderSeq) return;

@@ -173,6 +173,7 @@ kohaku.registerChartType({
 ```
 
 - `helpers` に `niceTicks` / `fmtTick` / `CHART_COLORS` 等の既存ユーティリティを渡し、見た目の統一を保つ
+- **v0.4 実装で得た知見**: SQLだけでは表現できないチャート(SPC管理図の管理限界・ネルソンルール判定など)のため、`buildQuery` の代わりに非同期の `fetch(spec, base)` フック(本体の分析APIを呼んで結果オブジェクトを返す)を許可する。統計処理をUI側に書かない(設計Rule 1)ための仕組みで、SPC管理図が最初の利用者
 - サーバーは `--enable-plugins` 時のみ `/plugins/<name>/chart.js` を配信し、`index.html` 読み込み後にUIが順次ロードする
 - ChartSpec(保存形式)は変更不要。`chart_type` にプラグインの識別子が入るだけ(Rule 3 を維持)
 - プラグイン未導入環境でそのプロジェクトを開いた場合は「未対応のチャートタイプ(プラグイン `wafermap` が必要)」と表示する(壊さない・原因を示す)

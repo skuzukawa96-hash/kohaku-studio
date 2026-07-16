@@ -377,6 +377,94 @@ pub fn api_timeseries(state: &mut AppState, req: &Json) -> BiResult<Json> {
     }))
 }
 
+/// SPC管理図に載せる最大点数(全点を返すため上限を設ける)
+const SPC_MAX_POINTS: usize = 10_000;
+
+/// SPC管理図API。順序列でソート(同一時点は集約)した系列に対し
+/// I管理図の管理限界とネルソンルール違反を計算して返す。
+pub fn api_spc(state: &mut AppState, req: &Json) -> BiResult<Json> {
+    let x_col = s(req, "x");
+    let v_col = s(req, "value");
+    if x_col.is_empty() || v_col.is_empty() {
+        return Err("順序列と測定値の列を指定してください".to_string());
+    }
+    if x_col == v_col {
+        return Err("順序列と測定値の列には別の列を指定してください".to_string());
+    }
+    let use_sum = s(req, "agg") == "sum";
+
+    let result = resolve_source(state, req)?;
+    let xi = col_index(&result, &x_col)?;
+    let vi = col_index(&result, &v_col)?;
+    let vs = col_f64(&result, vi);
+
+    // 順序列でソートして同一時点を集約(api_timeseries と同じ前処理)
+    let mut all_numeric = true;
+    let mut items: Vec<(Option<f64>, String, f64)> = Vec::new();
+    for (i, v) in vs.iter().enumerate() {
+        let xv = &result.rows[i][xi];
+        if matches!(xv, Value::Null) || !v.is_finite() {
+            continue;
+        }
+        let (num, label) = match xv {
+            Value::Int(n) => (Some(*n as f64), n.to_string()),
+            Value::Float(f) => (Some(*f), f.to_string()),
+            Value::Bool(b) => (Some(*b as i64 as f64), b.to_string()),
+            Value::Text(t) => (None, t.clone()),
+            Value::Null => unreachable!(),
+        };
+        if num.is_none() {
+            all_numeric = false;
+        }
+        items.push((num, label, *v));
+    }
+    let dropped = vs.len() - items.len();
+    if all_numeric {
+        items.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    } else {
+        items.sort_by(|a, b| a.1.cmp(&b.1));
+    }
+    let mut labels: Vec<String> = Vec::new();
+    let mut series: Vec<f64> = Vec::new();
+    let mut counts: Vec<usize> = Vec::new();
+    for (_, label, v) in items {
+        if labels.last() == Some(&label) {
+            *series.last_mut().unwrap() += v;
+            *counts.last_mut().unwrap() += 1;
+        } else {
+            labels.push(label);
+            series.push(v);
+            counts.push(1);
+        }
+    }
+    if !use_sum {
+        // 既定は平均(同一時点の複数測定はサブグループ平均として扱う)
+        for (v, c) in series.iter_mut().zip(&counts) {
+            *v /= *c as f64;
+        }
+    }
+    if series.len() > SPC_MAX_POINTS {
+        return Err(format!(
+            "点数({})が多すぎます(管理図は{}点まで。SQLで期間を絞ってください)",
+            series.len(),
+            SPC_MAX_POINTS
+        ));
+    }
+
+    let r = bi_analytics::spc(&series)?;
+    Ok(json!({
+        "labels": labels,
+        "values": series.iter().map(|v| round4(*v)).collect::<Vec<_>>(),
+        "center": round4(r.center),
+        "sigma": round4(r.sigma),
+        "ucl": round4(r.ucl),
+        "lcl": round4(r.lcl),
+        "violations": r.violations,
+        "n_used": series.len(),
+        "dropped": dropped,
+    }))
+}
+
 // ---------- クラスタリング ----------
 
 /// エルボー法によるクラスタ数kの自動提案。
