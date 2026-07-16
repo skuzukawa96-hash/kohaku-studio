@@ -113,8 +113,11 @@ APIエンドポイント（`/api/*`）には次のガードがあります。
 
 ### 新しいチャートタイプ
 
-`bi-app/ui/app.js` の `buildChartQuery()`（データ取得SQLの組み立て）と
-`renderChart()`（Canvas描画）に分岐を追加します。
+`bi-app/ui/app.js` の `kohaku.registerChartType()` で登録します
+（[plugin-api-draft.md](plugin-api-draft.md) 6章のチャートプラグインと同一のAPI。
+実装例はウェハーマップ）。データ取得SQLの組み立て（`buildQuery`）と
+Canvas描画（`render`）を渡すだけで、チャート種別セレクト・ダッシュボード・
+PNG/HTMLエクスポートに自動で参加します。
 
 ## 設計方針からの主な変更点（軽量化）
 
