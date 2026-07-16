@@ -80,6 +80,26 @@ fn make_samples(dir: &str) -> Result<(), String> {
     let csv_path = format!("{dir}/sample_sales.csv");
     std::fs::write(&csv_path, csv).map_err(|e| e.to_string())?;
 
+    // CSV: ウェハーマップ用(ダイ座標と歩留まり)。中心ほど高く外周で低下する
+    // 同心円分布に、(5,-3)付近の局所不良クラスタを混ぜる
+    let mut wafer = String::from("die_x,die_y,yield\n");
+    for die_y in -12i64..=12 {
+        for die_x in -12i64..=12 {
+            let r2 = (die_x * die_x + die_y * die_y) as f64;
+            if r2.sqrt() > 11.5 {
+                continue; // ウェハー円の外
+            }
+            let mut y = 99.0 - r2 * 0.04 + (rand() - 1.0) * 1.5;
+            let (dx, dy) = (die_x - 5, die_y + 3);
+            if dx * dx + dy * dy <= 4 {
+                y -= 18.0; // 局所不良クラスタ
+            }
+            wafer.push_str(&format!("{die_x},{die_y},{:.2}\n", y.clamp(0.0, 100.0)));
+        }
+    }
+    let wafer_path = format!("{dir}/sample_wafer.csv");
+    std::fs::write(&wafer_path, wafer).map_err(|e| e.to_string())?;
+
     // SQLite: 装置マスタ + 測定データ
     let db_path = format!("{dir}/sample_fab.db");
     let _ = std::fs::remove_file(&db_path);
@@ -113,6 +133,7 @@ fn make_samples(dir: &str) -> Result<(), String> {
     }
     drop(stmt);
     println!("  {csv_path}");
+    println!("  {wafer_path}");
     println!("  {db_path}");
     Ok(())
 }

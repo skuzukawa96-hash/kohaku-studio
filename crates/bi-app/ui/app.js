@@ -372,6 +372,7 @@ function chartSpecFromForm() {
       : { kind: "sql", sql: $("ch-sql").value.trim() },
     x: $("ch-x").value,
     y: $("ch-y").value,
+    value: $("ch-value").value,
     series: $("ch-series").value,
     agg: $("ch-agg").value,
     bins: parseInt($("ch-bins").value, 10) || 20,
@@ -390,6 +391,7 @@ function loadChartToForm(spec) {
   loadChartColumns().then(() => {
     $("ch-x").value = spec.x || "";
     $("ch-y").value = spec.y || "";
+    $("ch-value").value = spec.value || "";
     $("ch-series").value = spec.series || "";
     $("ch-agg").value = spec.agg || "none";
     $("ch-bins").value = spec.bins || 20;
@@ -403,6 +405,24 @@ function updateChartFormVisibility() {
   const type = $("ch-type").value;
   $("ch-dataset-row").classList.toggle("hidden", kind !== "dataset");
   $("ch-sql-row").classList.toggle("hidden", kind !== "sql");
+  const reg = CHART_REGISTRY.get(type);
+  if (reg) {
+    // 登録チャート: form 定義に従って行の表示とラベルを切り替える
+    const f = reg.form || {};
+    $("ch-bins-row").classList.add("hidden");
+    $("ch-x-row").classList.toggle("hidden", !f.x);
+    $("ch-y-row").classList.toggle("hidden", !f.y);
+    $("ch-value-row").classList.toggle("hidden", !f.value);
+    $("ch-series-row").classList.toggle("hidden", !f.series);
+    $("ch-agg-row").classList.toggle("hidden", !f.agg);
+    $("ch-x-label").textContent = typeof f.x === "string" ? f.x : "X列";
+    $("ch-y-label").textContent = typeof f.y === "string" ? f.y : "Y列";
+    $("ch-value-label").textContent = typeof f.value === "string" ? f.value : "値の列";
+    return;
+  }
+  $("ch-x-label").textContent = "X列";
+  $("ch-y-label").textContent = "Y列";
+  $("ch-value-row").classList.add("hidden");
   $("ch-bins-row").classList.toggle("hidden", type !== "histogram");
   $("ch-y-row").classList.toggle("hidden", type === "histogram" || type === "table");
   $("ch-x-row").classList.toggle("hidden", type === "table");
@@ -450,7 +470,7 @@ async function loadChartColumns() {
   } catch (e) {
     /* SQL未完成時は無視 */
   }
-  for (const id of ["ch-x", "ch-y", "ch-series"]) {
+  for (const id of ["ch-x", "ch-y", "ch-value", "ch-series"]) {
     const sel = $(id);
     const cur = sel.value;
     sel.innerHTML = "";
@@ -490,6 +510,8 @@ function filteredBase(spec, filters) {
 
 function buildChartQuery(spec, filters) {
   const base = filteredBase(spec, filters);
+  const reg = CHART_REGISTRY.get(spec.chart_type);
+  if (reg) return reg.buildQuery(spec, base);
   const x = qi(spec.x), y = qi(spec.y);
   // 系列列(任意)。指定時は s 列としてSELECTに含める
   const s = spec.series ? `, ${qi(spec.series)} AS s` : "";
@@ -640,6 +662,18 @@ function chartYLabel(spec) {
 
 function renderChart(canvas, spec, result) {
   const { ctx, w, h } = setupCanvas(canvas);
+  const reg = CHART_REGISTRY.get(spec.chart_type);
+  if (reg) {
+    reg.render(ctx, w, h, spec, result, CHART_HELPERS);
+    return;
+  }
+  if (!["bar", "line", "scatter", "histogram"].includes(spec.chart_type)) {
+    // 未登録タイプ: プラグイン未導入の環境でプロジェクトを開いた場合など
+    // (docs/plugin-api-draft.md 6.1「壊さない・原因を示す」)
+    ctx.fillStyle = CHART_COLORS.text;
+    ctx.fillText(`未対応のチャートタイプです: ${spec.chart_type}(プラグインが必要な可能性があります)`, 16, 24);
+    return;
+  }
   const xi = result.columns.indexOf("x");
   const yi = result.columns.indexOf("y");
   const si = result.columns.indexOf("s");
@@ -935,6 +969,120 @@ const CLUSTER_COLORS = ["#4f8ef7", "#58c9a4", "#e0a15c", "#e06c75", "#b478e0", "
 let anColumns = []; // {name, numeric}
 let lastCluster = null;
 let lastClusterReq = null;
+
+// ---------- チャートタイプ登録(Plugin API 検証実装) ----------
+// 新しいチャートタイプは registerChartType で登録する。将来のチャートプラグイン
+// (docs/plugin-api-draft.md 6章)と同一のAPIであり、ウェハーマップは本体組み込みの
+// ままこのAPIの最初の利用者としてドラフトの実用性を検証する(ドラフト8章の折衷案)。
+// 既存5種(棒/折れ線/散布図/ヒストグラム/テーブル)は従来の分岐実装のまま。
+
+const CHART_REGISTRY = new Map();
+const kohaku = {
+  /**
+   * def: {
+   *   type, label,                       // ChartSpec.chart_type の識別子と表示名
+   *   form: {x, y, value, series, agg},  // 使うフォーム行(文字列を渡すとラベルを差し替え)
+   *   buildQuery(spec, base),            // データ取得SQL(base はフィルタ適用済みソース)
+   *   render(ctx, w, h, spec, result, helpers), // Canvas 2D 描画
+   * }
+   */
+  registerChartType(def) {
+    CHART_REGISTRY.set(def.type, def);
+  },
+};
+
+/** 登録チャートへ渡す描画ユーティリティ(本体チャートと見た目を揃えるため) */
+const CHART_HELPERS = {
+  niceTicks,
+  fmtTick,
+  colors: CHART_COLORS,
+  seriesColors: SERIES_COLORS,
+};
+
+// ---------- ウェハーマップ(v0.4) ----------
+// ダイ座標(x, y)ごとに値を集計し、色分けした格子+ウェハー外周円として描画する
+
+kohaku.registerChartType({
+  type: "wafermap",
+  label: "ウェハーマップ",
+  form: { x: "X座標(ダイ)", y: "Y座標(ダイ)", value: "値(歩留まり等)", agg: true },
+  buildQuery(spec, base) {
+    if (!spec.value && spec.agg !== "count") {
+      throw new Error("値の列を指定してください(件数を数える場合は集計=件数)");
+    }
+    const x = qi(spec.x);
+    const y = qi(spec.y);
+    // ウェハーマップは常にダイ単位へ集計する(「なし」は平均として扱う)
+    const aggName = !spec.agg || spec.agg === "none" ? "avg" : spec.agg;
+    const agg = aggName === "count" ? "COUNT(*)" : `${aggName.toUpperCase()}(${qi(spec.value)})`;
+    return `SELECT ${x} AS x, ${y} AS y, ${agg} AS v FROM (${base}) WHERE ${x} IS NOT NULL AND ${y} IS NOT NULL GROUP BY ${x}, ${y} LIMIT 100000`;
+  },
+  render(ctx, w, h, spec, result, H) {
+    const xi = result.columns.indexOf("x");
+    const yi = result.columns.indexOf("y");
+    const vi = result.columns.indexOf("v");
+    const dies = result.rows.filter((r) => r[xi] !== null && r[yi] !== null && r[vi] !== null);
+    if (!dies.length) {
+      ctx.fillStyle = H.colors.text;
+      ctx.fillText("データがありません", 16, 24);
+      return;
+    }
+    const xs = dies.map((r) => r[xi]);
+    const ys = dies.map((r) => r[yi]);
+    const vs = dies.map((r) => r[vi]);
+    const xMin = Math.min(...xs), xMax = Math.max(...xs);
+    const yMin = Math.min(...ys), yMax = Math.max(...ys);
+    let vMin = Math.min(...vs), vMax = Math.max(...vs);
+    if (vMin === vMax) { vMin -= 1; vMax += 1; }
+
+    // 正方形セルでプロット領域(右にカラースケール分を確保)に収める
+    const m = { l: 16, r: 80, t: 12, b: 28 };
+    const nx = xMax - xMin + 1;
+    const ny = yMax - yMin + 1;
+    const cell = Math.max(2, Math.min((w - m.l - m.r) / nx, (h - m.t - m.b) / ny));
+    const gridW = cell * nx, gridH = cell * ny;
+    const ox = m.l + (w - m.l - m.r - gridW) / 2;
+    const oy = m.t + (h - m.t - m.b - gridH) / 2;
+
+    // 低=赤 / 中=黄 / 高=緑 の3点補間(歩留まりの直感に合わせる)
+    const lerp = (a, b, t) => Math.round(a + (b - a) * t);
+    const colorOf = (v) => {
+      const t = (v - vMin) / (vMax - vMin);
+      const [c0, c1, u] =
+        t < 0.5 ? [[224, 108, 117], [224, 208, 92], t * 2] : [[224, 208, 92], [88, 201, 164], t * 2 - 1];
+      return `rgb(${lerp(c0[0], c1[0], u)}, ${lerp(c0[1], c1[1], u)}, ${lerp(c0[2], c1[2], u)})`;
+    };
+
+    // ダイ描画(Y軸は上向きが正になるよう反転)
+    for (const r of dies) {
+      const cx = ox + (r[xi] - xMin) * cell;
+      const cy = oy + (yMax - r[yi]) * cell;
+      ctx.fillStyle = colorOf(r[vi]);
+      ctx.fillRect(cx + 0.5, cy + 0.5, cell - 1, cell - 1);
+    }
+    // ウェハー外周円
+    ctx.strokeStyle = H.colors.grid;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(ox + gridW / 2, oy + gridH / 2, Math.max(gridW, gridH) / 2 + cell * 0.6, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.lineWidth = 1;
+
+    // カラースケール(右端の縦バー)
+    const sx = w - m.r + 28;
+    const sy = m.t + 10;
+    const sh = h - m.t - m.b - 20;
+    for (let i = 0; i < sh; i++) {
+      ctx.fillStyle = colorOf(vMax - ((vMax - vMin) * i) / sh);
+      ctx.fillRect(sx, sy + i, 14, 1);
+    }
+    ctx.fillStyle = H.colors.text;
+    ctx.textAlign = "left";
+    ctx.fillText(H.fmtTick(vMax), sx + 18, sy + 8);
+    ctx.fillText(H.fmtTick(vMin), sx + 18, sy + sh);
+    ctx.fillText(`ダイ数: ${dies.length}`, m.l, h - 8);
+  },
+});
 
 function anGetSource() {
   return $("an-source-kind").value === "dataset"
@@ -2309,6 +2457,13 @@ function init() {
     switchTab("charts");
   };
 
+  // 登録チャートタイプをセレクトへ追加(組み込み5種はHTML側で定義済み)
+  for (const def of CHART_REGISTRY.values()) {
+    const op = document.createElement("option");
+    op.value = def.type;
+    op.textContent = def.label;
+    $("ch-type").appendChild(op);
+  }
   $("ch-type").onchange = updateChartFormVisibility;
   $("ch-source-kind").onchange = () => { updateChartFormVisibility(); loadChartColumns(); };
   $("ch-dataset").onchange = loadChartColumns;
