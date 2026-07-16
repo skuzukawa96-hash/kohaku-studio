@@ -1190,6 +1190,117 @@ kohaku.registerChartType({
   },
 });
 
+// ---------- 装置差分析(v0.4) ----------
+// 検定・多重比較はすべて Rust 側(/api/analyze/tooldiff)。UIは表示のみ
+
+async function runToolDiff() {
+  const out = $("tool-out");
+  const req = { source: anGetSource(), group: $("tool-g").value, value: $("tool-v").value };
+  out.innerHTML = '<div class="hint">分析中...</div>';
+  try {
+    const r = await api("/api/analyze/tooldiff", req);
+    const t = r.test;
+    const eff = t.effect
+      ? `, ${esc(t.effect.name)}=${fmtNum(t.effect.value, 3)}(${esc(t.effect.magnitude)})`
+      : "";
+    let html = `<div class="${t.significant ? "rec-box" : "est-box"}"><b>${
+      t.significant ? "⚠ グループ間に有意差あり" : "グループ間に有意差なし"
+    }</b>(${esc(t.name)}, ${esc(t.statistic_name)}=${fmtNum(t.statistic, 3)}, p=${fmtP(t.p_value)}${eff})</div>`;
+    // 群別統計(平均の昇順)。有意差ありのとき最下位を赤で強調
+    const gs = [...r.groups].sort((a, b) => a.mean - b.mean);
+    html +=
+      '<div class="table-wrap"><table class="grid"><thead><tr><th>グループ</th><th>n</th><th>平均</th><th>SD</th><th>最小</th><th>最大</th></tr></thead><tbody>';
+    gs.forEach((g, i) => {
+      const mark = i === 0 && t.significant ? ' style="color:#e06c75"' : "";
+      html += `<tr${mark}><td>${esc(g.label)}</td><td class="num">${g.n.toLocaleString()}</td><td class="num">${fmtNum(g.mean, 3)}</td><td class="num">${fmtNum(g.sd, 3)}</td><td class="num">${fmtNum(g.min, 3)}</td><td class="num">${fmtNum(g.max, 3)}</td></tr>`;
+    });
+    html += "</tbody></table></div>";
+    if (Array.isArray(r.pairs)) {
+      const sig = r.pairs.filter((p) => p.significant);
+      html += sig.length
+        ? `<div class="hint">有意差のあるペア(Holm補正後 p&lt;${r.alpha}): ` +
+          sig
+            .map((p) => `${esc(p.a)} vs ${esc(p.b)}(平均差 ${fmtNum(p.mean_diff, 3)}, p=${fmtP(p.p_adjusted)})`)
+            .join(" / ") +
+          "</div>"
+        : '<div class="hint">Holm補正後に有意なペアはありません</div>';
+    }
+    if (r.dropped_small.length) {
+      html += `<div class="hint">検定から除外(3点未満): ${esc(r.dropped_small.join(", "))}</div>`;
+    }
+    out.innerHTML = html;
+    drawStripPlot($("tool-canvas"), r.groups);
+  } catch (e) {
+    $("tool-canvas").classList.add("hidden");
+    out.innerHTML = `<div class="hint error">${esc(e.message)}</div>`;
+  }
+}
+
+/** ストリップ図: グループごとの測定値の分布をジッター付きの点で示す */
+function drawStripPlot(canvas, groups) {
+  canvas.classList.remove("hidden");
+  const { ctx, w, h } = setupCanvas(canvas);
+  const C = CHART_COLORS;
+  const m = { l: 60, r: 16, t: 16, b: 46 };
+  const pw = w - m.l - m.r;
+  const ph = h - m.t - m.b;
+  const all = groups.flatMap((g) => g.points);
+  const ticks = niceTicks(Math.min(...all), Math.max(...all), 5);
+  const yMin = ticks[0];
+  const yMax = ticks[ticks.length - 1];
+  const py = (v) => m.t + ph - ((v - yMin) / (yMax - yMin || 1)) * ph;
+  const gx = (gi) => m.l + ((gi + 0.5) / groups.length) * pw;
+
+  ctx.strokeStyle = C.grid;
+  ctx.fillStyle = C.text;
+  ctx.textAlign = "right";
+  for (const t of ticks) {
+    ctx.beginPath();
+    ctx.moveTo(m.l, py(t));
+    ctx.lineTo(m.l + pw, py(t));
+    ctx.stroke();
+    ctx.fillText(fmtTick(t), m.l - 6, py(t) + 4);
+  }
+  // 全体平均(表示点の単純平均)の破線
+  const total = all.reduce((a, b) => a + b, 0) / all.length;
+  ctx.strokeStyle = C.accent2;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(m.l, py(total));
+  ctx.lineTo(m.l + pw, py(total));
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  const jitterW = Math.min(40, (pw / groups.length) * 0.35);
+  groups.forEach((g, gi) => {
+    // 点(決定的ジッターで再描画しても同じ見た目にする)
+    ctx.globalAlpha = 0.55;
+    ctx.fillStyle = SERIES_COLORS[gi % SERIES_COLORS.length];
+    g.points.forEach((v, i) => {
+      const j = ((((i + 1) * 2654435761) >>> 16) % 1000) / 1000 - 0.5;
+      ctx.beginPath();
+      ctx.arc(gx(gi) + j * 2 * jitterW, py(v), 2, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+    // 平均の横棒
+    ctx.strokeStyle = C.text;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(gx(gi) - jitterW, py(g.mean));
+    ctx.lineTo(gx(gi) + jitterW, py(g.mean));
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    // グループ名
+    ctx.fillStyle = C.text;
+    ctx.textAlign = "center";
+    ctx.fillText(g.label, gx(gi), m.t + ph + 16, pw / groups.length - 8);
+  });
+  ctx.textAlign = "left";
+  ctx.fillStyle = C.accent2;
+  ctx.fillText("--- 全体平均", m.l + 4, m.t - 4);
+}
+
 function anGetSource() {
   return $("an-source-kind").value === "dataset"
     ? { kind: "dataset", dataset: $("an-dataset").value }
@@ -1275,6 +1386,8 @@ async function anLoadColumns() {
   };
   fillCols("ts-x", anColumns);
   fillCols("ts-y", numCols);
+  fillCols("tool-g", anColumns);
+  fillCols("tool-v", numCols);
   renderTestSelects();
   if (!numCols.length) $("an-cols-msg").textContent = "数値列がありません(ソースを選択してください)";
 }
@@ -2605,6 +2718,7 @@ function init() {
   $("btn-an-clu").onclick = () => runCluster();
   $("btn-clu-elbow").onclick = suggestClusterK;
   $("btn-an-ts").onclick = runTimeseries;
+  $("btn-an-tool").onclick = runToolDiff;
   $("btn-clu-save").onclick = () => {
     const name = $("clu-save-name").value.trim();
     if (!name) { setStatus("保存名を入力してください", true); return; }
