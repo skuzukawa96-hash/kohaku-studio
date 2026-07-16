@@ -465,6 +465,78 @@ pub fn api_spc(state: &mut AppState, req: &Json) -> BiResult<Json> {
     }))
 }
 
+// ---------- ロットトレース ----------
+
+/// 1データセットあたりの最大表示行数
+const LOTTRACE_MAX_ROWS: usize = 500;
+
+/// ロットトレースAPI。指定したID列を持つすべての登録データセットを
+/// 横断検索し、一致した行をデータセットごとに返す。
+/// すべての入力が TableData → SQLite に正規化されているため、
+/// ソースの異なるデータでも同じロットIDで一括トレースできる。
+pub fn api_lottrace(state: &mut AppState, req: &Json) -> BiResult<Json> {
+    let col = s(req, "column");
+    let value = s(req, "value");
+    if col.is_empty() || value.trim().is_empty() {
+        return Err("ID列と検索するIDを指定してください".to_string());
+    }
+    let partial = req
+        .get("partial")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false);
+
+    // ID列を持つデータセットを先に確定する(engine借用と分離するため)
+    let targets: Vec<String> = state
+        .datasets
+        .iter()
+        .filter(|d| {
+            d.schema
+                .as_ref()
+                .map(|sc| sc.columns.iter().any(|c| c.name == col))
+                .unwrap_or(false)
+        })
+        .map(|d| d.name.clone())
+        .collect();
+    if targets.is_empty() {
+        return Err(format!("列「{col}」を持つデータセットがありません"));
+    }
+
+    let ident = col.replace('"', "\"\"");
+    let lit = value.replace('\'', "''");
+    let cond = if partial {
+        // LIKEのワイルドカードをエスケープして「値そのものの部分一致」にする
+        let esc = lit
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        format!("\"{ident}\" LIKE '%{esc}%' ESCAPE '\\'")
+    } else {
+        format!("\"{ident}\" = '{lit}'")
+    };
+
+    let mut results: Vec<Json> = Vec::new();
+    for name in &targets {
+        let dsq = name.replace('"', "\"\"");
+        let sql = format!("SELECT * FROM \"{dsq}\" WHERE {cond}");
+        let r = state.engine.query(&sql, LOTTRACE_MAX_ROWS)?;
+        if r.rows.is_empty() {
+            continue;
+        }
+        results.push(json!({
+            "dataset": name,
+            "columns": r.columns,
+            "rows": r.rows,
+            "truncated": r.truncated,
+        }));
+    }
+    Ok(json!({
+        "results": results,
+        "searched_datasets": targets.len(),
+        "column": col,
+        "value": value,
+    }))
+}
+
 // ---------- 装置差分析 ----------
 
 /// 装置差分析API。カテゴリ列(装置など)で群分けした測定値に対し、
