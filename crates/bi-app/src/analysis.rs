@@ -465,6 +465,125 @@ pub fn api_spc(state: &mut AppState, req: &Json) -> BiResult<Json> {
     }))
 }
 
+// ---------- 装置差分析 ----------
+
+/// 装置差分析API。カテゴリ列(装置など)で群分けした測定値に対し、
+/// Welch検定(2群: t検定 / 3群以上: ANOVA + Holm補正の事後比較)と
+/// 群ごとの要約統計・ストリップ図用の点を返す。
+/// 等分散を仮定しない検定を既定にするのは、装置ごとにばらつきが
+/// 異なるのが普通のため(htest の既存実装を再利用)。
+pub fn api_tooldiff(state: &mut AppState, req: &Json) -> BiResult<Json> {
+    let g_col = s(req, "group");
+    let v_col = s(req, "value");
+    if g_col.is_empty() || v_col.is_empty() {
+        return Err("装置/グループ列と測定値の列を指定してください".to_string());
+    }
+    if g_col == v_col {
+        return Err("装置/グループ列と測定値の列には別の列を指定してください".to_string());
+    }
+    let alpha = 0.05;
+
+    let result = resolve_source(state, req)?;
+    let gi = col_index(&result, &g_col)?;
+    let ti = col_index(&result, &v_col)?;
+    let all_groups = build_groups(&result, ti, gi)?;
+
+    // 3点未満の群は検定から除外する(結果に明示して黙って消さない)
+    let mut dropped_small: Vec<String> = Vec::new();
+    let groups: Vec<(String, Vec<f64>)> = all_groups
+        .into_iter()
+        .filter(|(label, v)| {
+            if v.len() < 3 {
+                dropped_small.push(format!("{label}(n={})", v.len()));
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    if groups.len() < 2 {
+        return Err("比較できる群が2つ未満です(各群3点以上の測定値が必要)".to_string());
+    }
+
+    let gv: Vec<Vec<f64>> = groups.iter().map(|(_, v)| v.clone()).collect();
+    let mut test = if groups.len() == 2 {
+        htest::welch_t(&gv[0], &gv[1], alpha)?
+    } else {
+        htest::welch_anova(&gv, alpha)?
+    };
+    for (gs, (label, _)) in test.groups.iter_mut().zip(groups.iter()) {
+        gs.label = label.clone();
+    }
+
+    // 3群以上はペアワイズ事後比較(Welch t + Holm補正)
+    let pairs: Json = if groups.len() >= 3 {
+        let mut names: Vec<(String, String)> = Vec::new();
+        let mut raw_p: Vec<f64> = Vec::new();
+        let mut diffs: Vec<f64> = Vec::new();
+        for i in 0..groups.len() {
+            for j in (i + 1)..groups.len() {
+                let r = htest::welch_t(&groups[i].1, &groups[j].1, alpha)?;
+                names.push((groups[i].0.clone(), groups[j].0.clone()));
+                raw_p.push(r.p_value);
+                diffs.push(htest::mean(&groups[i].1) - htest::mean(&groups[j].1));
+            }
+        }
+        let adj = htest::adjust_pvalues(&raw_p, Correction::Holm);
+        json!(names
+            .iter()
+            .enumerate()
+            .map(|(k, (a, b))| json!({
+                "a": a,
+                "b": b,
+                "mean_diff": round4(diffs[k]),
+                "p_adjusted": adj[k],
+                "significant": adj[k] < alpha,
+            }))
+            .collect::<Vec<_>>())
+    } else {
+        Json::Null
+    };
+
+    // 群ごとの要約統計とストリップ図用の点(最大200点/群に間引き)
+    let group_stats: Vec<Json> = groups
+        .iter()
+        .map(|(label, v)| {
+            let (mut mn, mut mx) = (f64::MAX, f64::MIN);
+            for &x in v {
+                mn = mn.min(x);
+                mx = mx.max(x);
+            }
+            let step = (v.len() / 200).max(1);
+            json!({
+                "label": label,
+                "n": v.len(),
+                "mean": round4(htest::mean(v)),
+                "sd": round4(htest::sd(v)),
+                "min": round4(mn),
+                "max": round4(mx),
+                "points": v.iter().step_by(step).map(|x| round4(*x)).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "test": {
+            "name": test.test,
+            "statistic_name": test.statistic_name,
+            "statistic": round4(test.statistic),
+            "p_value": test.p_value,
+            "significant": test.p_value < alpha,
+            "effect": test.effect,
+            "interpretation": test.interpretation,
+        },
+        "groups": group_stats,
+        "pairs": pairs,
+        "dropped_small": dropped_small,
+        "alpha": alpha,
+        "n_used": test.n,
+    }))
+}
+
 // ---------- クラスタリング ----------
 
 /// エルボー法によるクラスタ数kの自動提案。

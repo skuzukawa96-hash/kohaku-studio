@@ -122,6 +122,7 @@
         <button class="subtab" data-sub="an-reg">📉 回帰分析</button>
         <button class="subtab" data-sub="an-clu">🧩 クラスタリング</button>
         <button class="subtab" data-sub="an-ts">📆 時系列分解</button>
+        <button class="subtab" data-sub="an-tool">🏭 装置差分析</button>
         <button class="subtab" data-sub="an-test">🧪 自動検定 (Test Advisor)</button>
       </nav>
 
@@ -182,6 +183,17 @@
         <div class="hint">時間列で並べ替えた等間隔の系列として分解します(日付の欠けがある場合はSQLで補完してください)</div>
         <div id="ts-out" class="an-out"></div>
         <canvas id="ts-canvas" class="an-canvas ts-canvas hidden"></canvas>
+      </div>
+
+      <div id="an-tool" class="subpane">
+        <div class="an-controls">
+          <label>装置/グループ列 <select id="tool-g"></select></label>
+          <label>測定値の列 <select id="tool-v"></select></label>
+          <button id="btn-an-tool" class="primary">▶ 装置差分析</button>
+        </div>
+        <div class="hint">グループ間の平均差を Welch 検定(2群: t検定 / 3群以上: ANOVA + Holm補正の多重比較)で評価します。各群3点以上の測定値が必要です</div>
+        <div id="tool-out" class="an-out"></div>
+        <canvas id="tool-canvas" class="an-canvas hidden"></canvas>
       </div>
 
       <div id="an-test" class="subpane">
