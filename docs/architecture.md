@@ -103,6 +103,9 @@ APIエンドポイント（`/api/*`）には次のガードがあります。
 
 ## 拡張ポイント
 
+将来のプラグイン機構(Connector / Transform / Chart)の設計は
+[plugin-api-draft.md](plugin-api-draft.md) を参照してください。以下は現在の(再ビルドを伴う)拡張方法です。
+
 ### 新しいデータソース
 
 `bi_core::Connector` trait を実装し、`bi-connectors/src/lib.rs` の
