@@ -86,4 +86,4 @@ bi-app        HTTPサーバー(tiny_http) / SQLite in-memoryクエリエンジ�
 - エラー型は `BiResult<T> = Result<T, String>`。コード内のコメント・エラーメッセージ・ドキュメントは**日本語**で書く（既存コードに合わせる）。
 - ユニットテストは各モジュール内の `#[cfg(test)] mod tests` に置く（コネクタ・エンジン・分析に既存例あり）。
 - 実行時の制限値（インポート200万行、SQL結果表示2,000行など）は README に明記されている。挙動を変える場合は README も更新する。
-- ロードマップは `ROADMAP.md`（現在 v0.2 完了、次は v0.3: Parquetキャッシュ / エクスポート / Plugin API）。
+- ロードマップは `ROADMAP.md`（現在 v0.3 完了、次は v0.4: ウェハーマップ / SPC管理図 / ロットトレース。Plugin API の実装も v0.4 以降 — `docs/plugin-api-draft.md` の未解決の論点はオーナー判断待ち）。
