@@ -87,6 +87,7 @@ async function refreshState() {
   renderChartList();
   renderDatasetSelect();
   renderAnDatasetSelect();
+  renderLotColSelect();
   renderHistory(st.queries || []);
 }
 
@@ -1189,6 +1190,69 @@ kohaku.registerChartType({
     );
   },
 });
+
+// ---------- ロットトレース(v0.4) ----------
+
+/** ID列候補 = 全データセットの列名の和集合。既定は "lot" を含む列 */
+function renderLotColSelect() {
+  const sel = $("lot-col");
+  if (!sel) return;
+  const cur = sel.value;
+  const names = [];
+  for (const d of datasets) {
+    if (!d.schema) continue;
+    for (const c of d.schema.columns) {
+      if (!names.includes(c.name)) names.push(c.name);
+    }
+  }
+  sel.innerHTML = "";
+  for (const n of names) {
+    const op = document.createElement("option");
+    op.value = n;
+    op.textContent = n;
+    sel.appendChild(op);
+  }
+  if (cur && names.includes(cur)) {
+    sel.value = cur;
+  } else {
+    const lot = names.find((n) => n.toLowerCase().includes("lot"));
+    if (lot) sel.value = lot;
+  }
+}
+
+async function runLotTrace() {
+  const out = $("lot-out");
+  const value = $("lot-id").value.trim();
+  if (!value) {
+    out.innerHTML = '<div class="hint error">検索するIDを入力してください</div>';
+    return;
+  }
+  out.innerHTML = '<div class="hint">検索中...</div>';
+  try {
+    const r = await api("/api/analyze/lottrace", {
+      column: $("lot-col").value,
+      value,
+      partial: $("lot-partial").checked,
+    });
+    if (!r.results.length) {
+      out.innerHTML = `<div class="hint">「${esc(r.value)}」は見つかりませんでした(列 ${esc(r.column)} を持つ ${r.searched_datasets} データセットを検索)</div>`;
+      return;
+    }
+    const total = r.results.reduce((a, x) => a + x.rows.length, 0);
+    out.innerHTML = `<div class="est-box">「${esc(r.value)}」の記録: ${r.results.length} データセット / 計 ${total.toLocaleString()} 行(${r.searched_datasets} データセットを検索)</div>`;
+    for (const res of r.results) {
+      const head = document.createElement("h3");
+      head.textContent = `${res.dataset}(${res.rows.length.toLocaleString()}行${res.truncated ? "、先頭のみ表示" : ""})`;
+      out.appendChild(head);
+      const wrap = document.createElement("div");
+      wrap.className = "table-wrap";
+      out.appendChild(wrap);
+      renderTable(wrap, res.columns, res.rows, 500);
+    }
+  } catch (e) {
+    out.innerHTML = `<div class="hint error">${esc(e.message)}</div>`;
+  }
+}
 
 // ---------- 装置差分析(v0.4) ----------
 // 検定・多重比較はすべて Rust 側(/api/analyze/tooldiff)。UIは表示のみ
@@ -2719,6 +2783,10 @@ function init() {
   $("btn-clu-elbow").onclick = suggestClusterK;
   $("btn-an-ts").onclick = runTimeseries;
   $("btn-an-tool").onclick = runToolDiff;
+  $("btn-an-lot").onclick = runLotTrace;
+  $("lot-id").onkeydown = (e) => {
+    if (e.key === "Enter") runLotTrace();
+  };
   $("btn-clu-save").onclick = () => {
     const name = $("clu-save-name").value.trim();
     if (!name) { setStatus("保存名を入力してください", true); return; }
