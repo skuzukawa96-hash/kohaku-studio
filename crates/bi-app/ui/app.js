@@ -1191,6 +1191,116 @@ kohaku.registerChartType({
   },
 });
 
+// ---------- 歩留まり推移プリセット(v0.4) ----------
+// 「推移(折れ線・時点平均)+SPC管理図」の定番セットをワンクリックで作成する
+
+function openPresetModal() {
+  if (!datasets.length) {
+    setStatus("先にデータセットをインポートしてください", true);
+    return;
+  }
+  const sel = $("pr-dataset");
+  const cur = sel.value;
+  sel.innerHTML = "";
+  for (const d of datasets) {
+    const op = document.createElement("option");
+    op.value = d.name;
+    op.textContent = d.name;
+    sel.appendChild(op);
+  }
+  if (cur && datasets.some((d) => d.name === cur)) sel.value = cur;
+  sel.onchange = fillPresetColumns;
+  fillPresetColumns();
+  $("pr-msg").textContent = "";
+  $("preset-modal").classList.remove("hidden");
+}
+
+function fillPresetColumns() {
+  const d = datasets.find((x) => x.name === $("pr-dataset").value);
+  const cols = d && d.schema ? d.schema.columns : [];
+  const numeric = cols.filter((c) => c.data_type === "Int64" || c.data_type === "Float64");
+  const fill = (id, names, withNone) => {
+    const sel = $(id);
+    sel.innerHTML = "";
+    if (withNone) {
+      const none = document.createElement("option");
+      none.value = "";
+      none.textContent = "(なし)";
+      sel.appendChild(none);
+    }
+    for (const n of names) {
+      const op = document.createElement("option");
+      op.value = n;
+      op.textContent = n;
+      sel.appendChild(op);
+    }
+  };
+  fill("pr-x", cols.map((c) => c.name), false);
+  fill("pr-y", numeric.map((c) => c.name), false);
+  fill("pr-series", cols.map((c) => c.name), true);
+  // 列名からの既定値の推測(外れてもユーザーが選び直すだけ)
+  const guess = (id, words) => {
+    const sel = $(id);
+    const hit = [...sel.options].find((o) => words.some((w) => o.value.toLowerCase().includes(w)));
+    if (hit) sel.value = hit.value;
+  };
+  guess("pr-x", ["date", "time", "day", "lot", "日付", "日時"]);
+  guess("pr-y", ["yield", "歩留"]);
+  guess("pr-series", ["tool", "装置", "equip"]);
+}
+
+async function createYieldPreset() {
+  const ds = $("pr-dataset").value;
+  const x = $("pr-x").value;
+  const y = $("pr-y").value;
+  const series = $("pr-series").value;
+  if (!x || !y) {
+    $("pr-msg").textContent = "時間/順序列と測定値の列を指定してください";
+    return;
+  }
+  if (x === y) {
+    $("pr-msg").textContent = "時間/順序列と測定値の列には別の列を指定してください";
+    return;
+  }
+  const src = { kind: "dataset", dataset: ds };
+  const t = Date.now();
+  charts.push({
+    id: t,
+    name: `${y}の推移(${ds})`,
+    chart_type: "line",
+    source: src,
+    x,
+    y,
+    value: "",
+    series,
+    agg: "avg",
+    bins: 20,
+    layout: { w: 2, h: "m" },
+  });
+  charts.push({
+    id: t + 1,
+    name: `${y}のSPC管理図(${ds})`,
+    chart_type: "spc",
+    source: src,
+    x,
+    y: "",
+    value: y,
+    series: "",
+    agg: "avg",
+    bins: 20,
+    layout: { w: 2, h: "m" },
+  });
+  try {
+    await api("/api/charts/set", { charts });
+    renderChartList();
+    $("preset-modal").classList.add("hidden");
+    setStatus(`「${y}の推移」と「${y}のSPC管理図」を作成しました`);
+    switchTab("dashboard");
+  } catch (e) {
+    $("pr-msg").textContent = e.message;
+  }
+}
+
 // ---------- ロットトレース(v0.4) ----------
 
 /** ID列候補 = 全データセットの列名の和集合。既定は "lot" を含む列 */
@@ -2754,6 +2864,8 @@ function init() {
   $("btn-ch-preview").onclick = previewChart;
   $("btn-ch-save").onclick = saveChart;
   $("btn-ch-png").onclick = exportChartPng;
+  $("btn-ch-preset").onclick = openPresetModal;
+  $("pr-ok").onclick = createYieldPreset;
   $("btn-dash-png").onclick = exportDashPng;
   $("btn-dash-html").onclick = exportDashHtml;
   $("btn-ch-new").onclick = () => {
