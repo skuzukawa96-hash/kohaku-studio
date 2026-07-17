@@ -89,6 +89,9 @@ async function refreshState() {
   renderAnDatasetSelect();
   renderLotColSelect();
   renderHistory(st.queries || []);
+  // データセット一覧が変わった可能性があるため、チャートの列セレクトも追随させる。
+  // これを怠ると「インポート直後にソースを切り替えるまでX列/Y列が選べない」状態になる
+  await loadChartColumns();
 }
 
 /** 表示用: 接続URLのパスワード部分を伏せる */
