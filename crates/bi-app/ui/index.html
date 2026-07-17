@@ -92,6 +92,7 @@
             <button id="btn-ch-save">💾 保存</button>
             <button id="btn-ch-png">📷 PNG保存</button>
             <button id="btn-ch-new">新規</button>
+            <button id="btn-ch-preset" title="推移チャートとSPC管理図をまとめて作成">⚡ 推移+SPC一式</button>
           </div>
           <h3>保存済みチャート</h3>
           <ul id="chart-list"></ul>
@@ -340,6 +341,26 @@
 </div>
 
 <!-- プロジェクト保存/読込 -->
+<div id="preset-modal" class="modal-bg hidden">
+  <div class="modal small">
+    <div class="modal-head">
+      <span>⚡ 推移 + SPC 一式を作成</span>
+      <button class="close" data-close="preset-modal">✕</button>
+    </div>
+    <div class="modal-body">
+      <label>データセット <select id="pr-dataset"></select></label>
+      <label>時間/順序列 <select id="pr-x"></select></label>
+      <label>測定値の列(歩留まり等) <select id="pr-y"></select></label>
+      <label>系列(装置別の色分け・任意) <select id="pr-series"></select></label>
+      <div class="hint">「推移(折れ線・時点平均)」と「SPC管理図」の2チャートを保存し、ダッシュボードへ追加します</div>
+      <div class="btn-row">
+        <button id="pr-ok" class="primary">作成</button>
+      </div>
+      <div id="pr-msg" class="hint"></div>
+    </div>
+  </div>
+</div>
+
 <div id="project-modal" class="modal-bg hidden">
   <div class="modal small">
     <div class="modal-head">
