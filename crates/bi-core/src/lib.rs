@@ -102,6 +102,31 @@ impl Default for ImportOptions {
     }
 }
 
+/// ストリーミング読み込みの受け口。スキーマ確定後、行チャンクが順に届く。
+/// 大きなソースを全行メモリに載せずに取り込むための仕組み(v0.4.x)。
+pub trait RowSink {
+    fn start(&mut self, schema: &TableSchema) -> BiResult<()>;
+    fn push_rows(&mut self, rows: Vec<Vec<Value>>) -> BiResult<()>;
+}
+
+/// TableData に集めるだけの RowSink(小さいソースやテスト用)
+#[derive(Default)]
+pub struct CollectSink {
+    pub schema: Option<TableSchema>,
+    pub rows: Vec<Vec<Value>>,
+}
+
+impl RowSink for CollectSink {
+    fn start(&mut self, schema: &TableSchema) -> BiResult<()> {
+        self.schema = Some(schema.clone());
+        Ok(())
+    }
+    fn push_rows(&mut self, mut rows: Vec<Vec<Value>>) -> BiResult<()> {
+        self.rows.append(&mut rows);
+        Ok(())
+    }
+}
+
 /// データコネクタ共通trait。新形式対応はこのtraitの実装を追加するだけでよい。
 pub trait Connector: Send + Sync {
     fn connector_type(&self) -> &'static str;
@@ -116,6 +141,20 @@ pub trait Connector: Send + Sync {
     fn list_objects(&self, path: &Path) -> BiResult<Vec<String>>;
     /// オブジェクトを TableData として読み込む
     fn load(&self, path: &Path, object: &str, opts: &ImportOptions) -> BiResult<TableData>;
+    /// ストリーミング読み込み。行チャンクを順に sink へ渡すことで、
+    /// 全行を同時にメモリへ載せない。既定実装は load() の結果を
+    /// 1チャンクで流すため、既存コネクタは無改修でよい。
+    fn load_stream(
+        &self,
+        path: &Path,
+        object: &str,
+        opts: &ImportOptions,
+        sink: &mut dyn RowSink,
+    ) -> BiResult<()> {
+        let td = self.load(path, object, opts)?;
+        sink.start(&td.schema)?;
+        sink.push_rows(td.rows)
+    }
 }
 
 /// 登録済みデータセットの定義(プロジェクト保存対象)
@@ -165,14 +204,14 @@ pub fn normalize_names(raw: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-/// 文字列セルの表から列型を推定し、値をパースする(CSV用)。
+/// 文字列セルのサンプルから列型を推定する(CSV用)。
 /// 列の非空値がすべて整数なら Int64、すべて数値なら Float64、それ以外は Utf8。
-pub fn parse_text_table(rows: Vec<Vec<String>>, ncols: usize) -> (Vec<DataType>, Vec<Vec<Value>>) {
+/// サンプルは先頭2000行まで(全走査を避けて高速化)。
+pub fn infer_text_types(sample: &[Vec<String>], ncols: usize) -> Vec<DataType> {
     let mut all_int = vec![true; ncols];
     let mut all_float = vec![true; ncols];
     let mut any_val = vec![false; ncols];
-    // 型推定は先頭2000行をサンプルにする(全走査を避けて高速化)
-    for row in rows.iter().take(2000) {
+    for row in sample.iter().take(2000) {
         for c in 0..ncols {
             let s = row.get(c).map(|s| s.trim()).unwrap_or("");
             if s.is_empty() {
@@ -187,7 +226,7 @@ pub fn parse_text_table(rows: Vec<Vec<String>>, ncols: usize) -> (Vec<DataType>,
             }
         }
     }
-    let types: Vec<DataType> = (0..ncols)
+    (0..ncols)
         .map(|c| {
             if !any_val[c] {
                 DataType::Utf8
@@ -199,26 +238,37 @@ pub fn parse_text_table(rows: Vec<Vec<String>>, ncols: usize) -> (Vec<DataType>,
                 DataType::Utf8
             }
         })
-        .collect();
+        .collect()
+}
+
+/// 文字列セル1つを推定済みの型に従って Value にする。
+/// 空欄は Null、パースできない値は Text へフォールバック
+/// (型推定はサンプルのみのため、サンプル外の行に型外れの値がありうる)。
+pub fn parse_text_cell(s: &str, t: DataType) -> Value {
+    let s = s.trim();
+    if s.is_empty() {
+        return Value::Null;
+    }
+    match t {
+        DataType::Int64 => parse_int(s)
+            .map(Value::Int)
+            .unwrap_or_else(|| Value::Text(s.to_string())),
+        DataType::Float64 => parse_float(s)
+            .map(Value::Float)
+            .unwrap_or_else(|| Value::Text(s.to_string())),
+        _ => Value::Text(s.to_string()),
+    }
+}
+
+/// 文字列セルの表から列型を推定し、値をパースする(CSV用)。
+/// infer_text_types + parse_text_cell の一括版。
+pub fn parse_text_table(rows: Vec<Vec<String>>, ncols: usize) -> (Vec<DataType>, Vec<Vec<Value>>) {
+    let types = infer_text_types(&rows, ncols);
     let parsed = rows
         .into_iter()
         .map(|row| {
             (0..ncols)
-                .map(|c| {
-                    let s = row.get(c).map(|s| s.trim()).unwrap_or("");
-                    if s.is_empty() {
-                        return Value::Null;
-                    }
-                    match types[c] {
-                        DataType::Int64 => parse_int(s)
-                            .map(Value::Int)
-                            .unwrap_or_else(|| Value::Text(s.to_string())),
-                        DataType::Float64 => parse_float(s)
-                            .map(Value::Float)
-                            .unwrap_or_else(|| Value::Text(s.to_string())),
-                        _ => Value::Text(s.to_string()),
-                    }
-                })
+                .map(|c| parse_text_cell(row.get(c).map(|s| s.as_str()).unwrap_or(""), types[c]))
                 .collect()
         })
         .collect();

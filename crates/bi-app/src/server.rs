@@ -280,26 +280,116 @@ fn api_objects(state: &AppState, req: &Json) -> BiResult<Json> {
 /// Parquetキャッシュ付きロード。有効なキャッシュがあればそこから復元し、
 /// ミスならコネクタで読み込んでキャッシュへ書き戻す(Cache-Aside方式)。
 /// 戻り値の bool はキャッシュヒットしたかどうか。
-fn load_with_cache(
-    state: &AppState,
+/// ストリーミング取り込みの受け口: 行チャンクをエンジンへ登録しつつ、
+/// 可能ならParquetキャッシュへも並行して書き込む。
+struct EngineSink<'a> {
+    engine: &'a mut Engine,
+    name: &'a str,
+    schema: Option<TableSchema>,
+    rows_total: usize,
+    /// start時にキャッシュ書き込みを開始するためのソース情報(Noneならキャッシュしない)
+    cache_target: Option<(PathBuf, String, ImportOptions)>,
+    cache: Option<bi_connectors::parquet_cache::CacheWriter>,
+}
+
+impl RowSink for EngineSink<'_> {
+    fn start(&mut self, schema: &TableSchema) -> BiResult<()> {
+        self.engine.create_table(self.name, schema)?;
+        if let Some((p, o, opts)) = &self.cache_target {
+            match bi_connectors::parquet_cache::store_stream_start(p, o, opts, schema) {
+                Ok(w) => self.cache = w,
+                Err(e) => eprintln!("Parquetキャッシュの開始に失敗(処理は継続): {e}"),
+            }
+        }
+        self.schema = Some(schema.clone());
+        Ok(())
+    }
+
+    fn push_rows(&mut self, rows: Vec<Vec<Value>>) -> BiResult<()> {
+        let schema = self.schema.as_ref().ok_or("スキーマが未確定です")?;
+        self.engine.insert_rows(self.name, schema, &rows)?;
+        self.rows_total += rows.len();
+        if let Some(mut w) = self.cache.take() {
+            match w.write_rows(&rows) {
+                Ok(()) => self.cache = Some(w),
+                Err(e) => {
+                    // キャッシュだけ諦めて取り込みは続行(黙ってnullを書かない設計)
+                    eprintln!("Parquetキャッシュの書き込みを中止(処理は継続): {e}");
+                    w.abort();
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// ストリーミング取り込み(v0.4.x)。キャッシュまたはコネクタから行チャンクを
+/// 受け取り、エンジン登録とキャッシュ書き込みをチャンク単位で行う。
+/// 全行を同時にメモリへ載せないため、大きなファイルでもピークメモリが
+/// チャンク分+SQLite本体に抑えられる。戻り値: (スキーマ, 行数, キャッシュ復元か)
+fn import_streaming(
+    state: &mut AppState,
     path: &Path,
     object: &str,
     opts: &ImportOptions,
-) -> BiResult<(TableData, bool)> {
-    if state.use_cache {
-        if let Some(td) = bi_connectors::parquet_cache::load(path, object, opts) {
-            return Ok((td, true));
+    name: &str,
+) -> BiResult<(TableSchema, usize, bool)> {
+    let use_cache = state.use_cache;
+    let AppState {
+        engine, registry, ..
+    } = state;
+
+    // 1) キャッシュからのストリーミング復元を試す
+    if use_cache {
+        let mut sink = EngineSink {
+            engine: &mut *engine,
+            name,
+            schema: None,
+            rows_total: 0,
+            cache_target: None,
+            cache: None,
+        };
+        if bi_connectors::parquet_cache::load_stream(path, object, opts, &mut sink) {
+            let schema = sink
+                .schema
+                .clone()
+                .ok_or("キャッシュの読み込みに失敗しました")?;
+            return Ok((schema, sink.rows_total, true));
         }
+        // 途中失敗の可能性があるが、以降のコネクタ経路でテーブルは作り直される
     }
-    let conn = connector_for(state, path)?;
-    let td = conn.load(path, object, opts)?;
-    if state.use_cache {
-        // キャッシュ書き込みの失敗でインポートを止めない(高速化はベストエフォート)
-        if let Err(e) = bi_connectors::parquet_cache::store(path, object, opts, &td) {
+
+    // 2) コネクタからストリーミング取り込み(+キャッシュ書き戻し)
+    let conn = registry.for_path(path).ok_or_else(|| {
+        format!(
+            "未対応のファイル形式・接続URLです: {}(対応スキーム: postgres:// mysql://)",
+            path.display()
+        )
+    })?;
+    let mut sink = EngineSink {
+        engine: &mut *engine,
+        name,
+        schema: None,
+        rows_total: 0,
+        cache_target: use_cache.then(|| (path.to_path_buf(), object.to_string(), opts.clone())),
+        cache: None,
+    };
+    if let Err(e) = conn.load_stream(path, object, opts, &mut sink) {
+        // 途中失敗で半端なテーブル・一時キャッシュを残さない
+        if let Some(w) = sink.cache.take() {
+            w.abort();
+        }
+        let _ = sink.engine.drop_table(name);
+        return Err(e);
+    }
+    let schema = sink.schema.clone().ok_or("読み込み結果が空です")?;
+    let rows_total = sink.rows_total;
+    if let Some(w) = sink.cache.take() {
+        if let Err(e) = w.finish() {
             eprintln!("Parquetキャッシュの保存に失敗(処理は継続): {e}");
         }
     }
-    Ok((td, false))
+    Ok((schema, rows_total, false))
 }
 
 fn parse_options(req: &Json) -> ImportOptions {
@@ -345,12 +435,10 @@ fn api_import(state: &mut AppState, req: &Json) -> BiResult<Json> {
         Some(n) => Some(n.min(MAX_IMPORT_ROWS)),
         None => Some(MAX_IMPORT_ROWS),
     };
-    let (td, from_cache) = load_with_cache(state, &path, &object, &opts)?;
-    let row_count = td.rows.len();
+    let (schema, row_count, from_cache) = import_streaming(state, &path, &object, &opts, &name)?;
     if from_cache {
         println!("データセット「{name}」をParquetキャッシュから復元({row_count}行)");
     }
-    state.engine.register(&name, &td)?;
     let def = DatasetDef {
         name: name.clone(),
         path: path_s,
@@ -360,12 +448,12 @@ fn api_import(state: &mut AppState, req: &Json) -> BiResult<Json> {
             ..opts
         },
         row_count,
-        schema: Some(td.schema.clone()),
+        schema: Some(schema.clone()),
     };
     state.datasets.retain(|d| d.name != name);
     state.datasets.push(def);
     Ok(
-        json!({"name": name, "rows": row_count, "schema": table_json(&TableData{schema: td.schema, rows: vec![]})["columns"]}),
+        json!({"name": name, "rows": row_count, "schema": table_json(&TableData{schema, rows: vec![]})["columns"]}),
     )
 }
 
@@ -474,26 +562,21 @@ fn api_project_load(state: &mut AppState, req: &Json) -> BiResult<Json> {
         let p = PathBuf::from(&def.path);
         let mut opts = def.options.clone();
         opts.max_rows = Some(MAX_IMPORT_ROWS);
-        match load_with_cache(state, &p, &def.object, &opts) {
-            Ok((td, from_cache)) => {
-                let rows = td.rows.len();
-                if let Err(e) = state.engine.register(&def.name, &td) {
-                    errors.push(format!("{}: {}", def.name, e));
-                } else {
-                    if from_cache {
-                        cached_count += 1;
-                        println!(
-                            "データセット「{}」をParquetキャッシュから復元({rows}行)",
-                            def.name
-                        );
-                    }
-                    state.datasets.push(DatasetDef {
-                        row_count: rows,
-                        schema: Some(td.schema),
-                        options: def.options,
-                        ..def
-                    });
+        match import_streaming(state, &p, &def.object, &opts, &def.name) {
+            Ok((schema, rows, from_cache)) => {
+                if from_cache {
+                    cached_count += 1;
+                    println!(
+                        "データセット「{}」をParquetキャッシュから復元({rows}行)",
+                        def.name
+                    );
                 }
+                state.datasets.push(DatasetDef {
+                    row_count: rows,
+                    schema: Some(schema),
+                    options: def.options,
+                    ..def
+                });
             }
             Err(e) => errors.push(format!("{}: {}", def.name, e)),
         }
