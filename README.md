@@ -161,7 +161,8 @@ cargo test
 ```
 
 コネクタ（CSV/Shift-JIS判定・Excel日付変換・SQLite）、Parquetキャッシュ、クエリエンジン、
-型推定、統計・回帰・クラスタリング（エルボー法）・統計検定・時系列分解・SPC管理図の
+型推定、統計・回帰・クラスタリング（エルボー法）・統計検定・時系列分解・SPC管理図、
+および分析APIレイヤ（時間列ソート・同一時点の集約・欠損除外・応答JSONの契約）の
 ユニットテストが含まれます。実DBが必要な PostgreSQL / MySQL のライブテストは
 環境変数（`KOHAKU_TEST_PG_URL` / `KOHAKU_TEST_MYSQL_URL`）があるときだけ実行されます。
 
