@@ -215,6 +215,173 @@ fn store_at(
     Ok(())
 }
 
+// ---------- ストリーミング書き込み(v0.4.x) ----------
+
+/// チャンク単位でキャッシュへ追記するライター。全行を揃えてから書く store() と
+/// 違い、取り込みと並行して書けるためピークメモリを増やさない。
+/// 列のエンコードは native 固定のため、型推定サンプル外の「型外れの値」に
+/// 出会ったら write_rows がエラーを返す(呼び出し側は abort してキャッシュなしで
+/// 続行する。黙って null を書いてデータを変えないための仕様)。
+pub struct CacheWriter {
+    writer: ArrowWriter<std::fs::File>,
+    arrow_schema: Arc<Schema>,
+    schema: TableSchema,
+    tmp: PathBuf,
+    dest: PathBuf,
+}
+
+/// ストリーミング書き込みを開始する。ファイル系ソース以外・キャッシュ先が
+/// 決められない場合は None(キャッシュせず続行してよい)。
+pub fn store_stream_start(
+    path: &Path,
+    object: &str,
+    opts: &ImportOptions,
+    schema: &TableSchema,
+) -> BiResult<Option<CacheWriter>> {
+    let Some(root) = default_cache_dir() else {
+        return Ok(None);
+    };
+    store_stream_start_at(&root, path, object, opts, schema)
+}
+
+fn store_stream_start_at(
+    root: &Path,
+    path: &Path,
+    object: &str,
+    opts: &ImportOptions,
+    schema: &TableSchema,
+) -> BiResult<Option<CacheWriter>> {
+    let Some((len, mtime)) = fingerprint(path) else {
+        return Ok(None); // DB接続などファイル以外は対象外
+    };
+    std::fs::create_dir_all(root).map_err(|e| format!("キャッシュディレクトリ作成失敗: {e}"))?;
+
+    let fields: Vec<Field> = schema
+        .columns
+        .iter()
+        .map(|col| Field::new(&col.name, arrow_type(col.data_type, true), true))
+        .collect();
+    let arrow_schema = Arc::new(Schema::new(fields));
+    let col_meta: Vec<ColMeta> = schema
+        .columns
+        .iter()
+        .map(|col| ColMeta {
+            name: col.name.clone(),
+            dtype: col.data_type.name().to_string(),
+            enc: "native".to_string(),
+        })
+        .collect();
+    let meta_json = serde_json::to_string(&col_meta).map_err(|e| e.to_string())?;
+    let props = WriterProperties::builder()
+        .set_compression(Compression::SNAPPY)
+        .set_key_value_metadata(Some(vec![
+            KeyValue::new("kohaku:format".to_string(), CACHE_FORMAT.to_string()),
+            KeyValue::new("kohaku:source_len".to_string(), len.to_string()),
+            KeyValue::new("kohaku:source_mtime_ms".to_string(), mtime.to_string()),
+            KeyValue::new("kohaku:columns".to_string(), meta_json),
+        ]))
+        .build();
+
+    let dest = cache_file(root, path, object, opts);
+    let tmp = dest.with_extension("tmp");
+    let file = std::fs::File::create(&tmp).map_err(|e| format!("キャッシュ作成失敗: {e}"))?;
+    let writer = ArrowWriter::try_new(file, arrow_schema.clone(), Some(props))
+        .map_err(|e| format!("Parquetライター初期化失敗: {e}"))?;
+    Ok(Some(CacheWriter {
+        writer,
+        arrow_schema,
+        schema: schema.clone(),
+        tmp,
+        dest,
+    }))
+}
+
+impl CacheWriter {
+    pub fn write_rows(&mut self, rows: &[Vec<Value>]) -> BiResult<()> {
+        let batch = build_batch_strict(&self.arrow_schema, &self.schema, rows)?;
+        self.writer
+            .write(&batch)
+            .map_err(|e| format!("Parquet書き込み失敗: {e}"))
+    }
+
+    /// 書き込みを確定し、一時ファイルを正式なキャッシュへ置き換える
+    pub fn finish(self) -> BiResult<()> {
+        self.writer
+            .close()
+            .map_err(|e| format!("Parquetクローズ失敗: {e}"))?;
+        let _ = std::fs::remove_file(&self.dest);
+        std::fs::rename(&self.tmp, &self.dest).map_err(|e| format!("キャッシュ置き換え失敗: {e}"))
+    }
+
+    /// 書き込みを破棄する(一時ファイルを削除。失敗は無視してよい)
+    pub fn abort(self) {
+        let _ = self.writer.close();
+        let _ = std::fs::remove_file(&self.tmp);
+    }
+}
+
+/// native固定のバッチ構築。宣言型に合わない値(Null以外)はエラーにする
+/// (キャッシュへ黙って null を書き、復元時にデータが変わることを防ぐ)。
+fn build_batch_strict(
+    schema: &Arc<Schema>,
+    ts: &TableSchema,
+    chunk: &[Vec<Value>],
+) -> BiResult<RecordBatch> {
+    let mut arrays: Vec<ArrayRef> = Vec::with_capacity(ts.columns.len());
+    for (c, col) in ts.columns.iter().enumerate() {
+        let mismatch = || format!("列「{}」に型外れの値があるためキャッシュを中止", col.name);
+        let arr: ArrayRef = match col.data_type {
+            DataType::Boolean => {
+                let mut b = BooleanBuilder::with_capacity(chunk.len());
+                for row in chunk {
+                    match row.get(c).unwrap_or(&Value::Null) {
+                        Value::Bool(v) => b.append_value(*v),
+                        Value::Null => b.append_null(),
+                        _ => return Err(mismatch()),
+                    }
+                }
+                Arc::new(b.finish())
+            }
+            DataType::Int64 => {
+                let mut b = Int64Builder::with_capacity(chunk.len());
+                for row in chunk {
+                    match row.get(c).unwrap_or(&Value::Null) {
+                        Value::Int(v) => b.append_value(*v),
+                        Value::Null => b.append_null(),
+                        _ => return Err(mismatch()),
+                    }
+                }
+                Arc::new(b.finish())
+            }
+            DataType::Float64 => {
+                let mut b = Float64Builder::with_capacity(chunk.len());
+                for row in chunk {
+                    match row.get(c).unwrap_or(&Value::Null) {
+                        Value::Float(v) => b.append_value(*v),
+                        Value::Int(v) => b.append_value(*v as f64),
+                        Value::Null => b.append_null(),
+                        _ => return Err(mismatch()),
+                    }
+                }
+                Arc::new(b.finish())
+            }
+            DataType::Null | DataType::Utf8 => {
+                let mut b = StringBuilder::new();
+                for row in chunk {
+                    match row.get(c).unwrap_or(&Value::Null) {
+                        Value::Text(v) => b.append_value(v),
+                        Value::Null => b.append_null(),
+                        _ => return Err(mismatch()),
+                    }
+                }
+                Arc::new(b.finish())
+            }
+        };
+        arrays.push(arr);
+    }
+    RecordBatch::try_new(schema.clone(), arrays).map_err(|e| format!("バッチ構築失敗: {e}"))
+}
+
 fn build_batch(
     schema: &Arc<Schema>,
     ts: &TableSchema,
@@ -338,6 +505,67 @@ fn load_at(root: &Path, path: &Path, object: &str, opts: &ImportOptions) -> Opti
         schema: TableSchema { columns },
         rows,
     })
+}
+
+/// キャッシュからのストリーミング復元。有効ならチャンクを sink へ流して true を返す。
+/// キャッシュ無し・無効・途中失敗はすべて false(呼び出し側はソースから読み直す。
+/// sink.start 後に失敗した場合もあるため、読み直し側はテーブルを作り直すこと)。
+pub fn load_stream(
+    path: &Path,
+    object: &str,
+    opts: &ImportOptions,
+    sink: &mut dyn RowSink,
+) -> bool {
+    let Some(root) = default_cache_dir() else {
+        return false;
+    };
+    load_stream_at(&root, path, object, opts, sink).is_some()
+}
+
+fn load_stream_at(
+    root: &Path,
+    path: &Path,
+    object: &str,
+    opts: &ImportOptions,
+    sink: &mut dyn RowSink,
+) -> Option<()> {
+    let (len, mtime) = fingerprint(path)?;
+    let file = std::fs::File::open(cache_file(root, path, object, opts)).ok()?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).ok()?;
+    let kv = builder.metadata().file_metadata().key_value_metadata()?;
+    let get = |key: &str| {
+        kv.iter()
+            .find(|e| e.key == key)
+            .and_then(|e| e.value.clone())
+    };
+    if get("kohaku:format")? != CACHE_FORMAT {
+        return None;
+    }
+    if get("kohaku:source_len")? != len.to_string()
+        || get("kohaku:source_mtime_ms")? != mtime.to_string()
+    {
+        return None;
+    }
+    let metas: Vec<ColMeta> = serde_json::from_str(&get("kohaku:columns")?).ok()?;
+    let columns = metas
+        .iter()
+        .map(|m| {
+            Some(ColumnSchema {
+                name: m.name.clone(),
+                data_type: dtype_from_name(&m.dtype)?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let reader = builder.with_batch_size(BATCH_ROWS).build().ok()?;
+
+    sink.start(&TableSchema { columns }).ok()?;
+    for batch in reader {
+        let batch = batch.ok()?;
+        let mut rows: Vec<Vec<Value>> = Vec::new();
+        append_batch(&mut rows, &batch, &metas)?;
+        sink.push_rows(rows).ok()?;
+    }
+    Some(())
 }
 
 fn append_batch(rows: &mut Vec<Vec<Value>>, batch: &RecordBatch, metas: &[ColMeta]) -> Option<()> {
@@ -547,5 +775,88 @@ mod tests {
         store_at(&cache, &source, "data", &opts, &td).unwrap();
         let loaded = load_at(&cache, &source, "data", &opts).unwrap();
         assert_same(&td, &loaded);
+    }
+
+    /// ストリーミング書き込み(チャンク分割)→ ストリーミング復元の往復
+    #[test]
+    fn test_stream_roundtrip() {
+        let (cache, src) = temp_dirs("stream_rt");
+        let source = src.join("data.csv");
+        std::fs::write(&source, "dummy").unwrap();
+        let td = sample_table();
+        let opts = ImportOptions::default();
+
+        let mut w = store_stream_start_at(&cache, &source, "data", &opts, &td.schema)
+            .unwrap()
+            .expect("ファイル系ソースなのでライターが返る");
+        // 1行ずつ = 3チャンクに分けて書く
+        for row in &td.rows {
+            w.write_rows(std::slice::from_ref(row)).unwrap();
+        }
+        w.finish().unwrap();
+
+        let mut sink = CollectSink::default();
+        assert!(load_stream_at(&cache, &source, "data", &opts, &mut sink).is_some());
+        let loaded = TableData {
+            schema: sink.schema.unwrap(),
+            rows: sink.rows,
+        };
+        assert_same(&td, &loaded);
+    }
+
+    /// ストリーミング書き込みは型外れの値を受け入れず、キャッシュを中止する
+    /// (黙って null を書いて復元時にデータが変わるのを防ぐ)。
+    /// abort 後は一時ファイルも残さない。
+    #[test]
+    fn test_stream_rejects_type_outlier_and_aborts() {
+        let (cache, src) = temp_dirs("stream_outlier");
+        let source = src.join("data.csv");
+        std::fs::write(&source, "dummy").unwrap();
+        let schema = TableSchema {
+            columns: vec![ColumnSchema {
+                name: "v".into(),
+                data_type: DataType::Int64,
+            }],
+        };
+        let opts = ImportOptions::default();
+
+        let mut w = store_stream_start_at(&cache, &source, "data", &opts, &schema)
+            .unwrap()
+            .unwrap();
+        w.write_rows(&[vec![Value::Int(1)], vec![Value::Null]])
+            .unwrap();
+        // 型推定サンプル外にあった文字列(Int64列)はエラーになる
+        let e = w
+            .write_rows(&[vec![Value::Text("N/A".into())]])
+            .unwrap_err();
+        assert!(e.contains("型外れ"), "{e}");
+        w.abort();
+
+        // 中断したのでキャッシュファイルも一時ファイルも残らない
+        let left: Vec<_> = std::fs::read_dir(&cache)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(left.is_empty(), "残骸: {left:?}");
+        // 復元も当然ミスする
+        let mut sink = CollectSink::default();
+        assert!(load_stream_at(&cache, &source, "data", &opts, &mut sink).is_none());
+    }
+
+    /// DB接続などファイル以外のソースはストリーミングでも対象外
+    #[test]
+    fn test_stream_start_skips_non_file() {
+        let (cache, _src) = temp_dirs("stream_nonfile");
+        let url = PathBuf::from("postgres://user@localhost:5432/db");
+        let schema = TableSchema {
+            columns: vec![ColumnSchema {
+                name: "a".into(),
+                data_type: DataType::Utf8,
+            }],
+        };
+        let w =
+            store_stream_start_at(&cache, &url, "t", &ImportOptions::default(), &schema).unwrap();
+        assert!(w.is_none());
     }
 }

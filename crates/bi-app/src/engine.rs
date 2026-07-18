@@ -35,10 +35,16 @@ impl Engine {
 
     /// データセットをテーブルとして登録(既存なら置き換え)
     pub fn register(&mut self, name: &str, data: &TableData) -> BiResult<()> {
+        self.create_table(name, &data.schema)?;
+        self.insert_rows(name, &data.schema, &data.rows)
+    }
+
+    /// テーブルを(再)作成する。ストリーミング取り込みの開始点
+    /// (以降は insert_rows をチャンクごとに呼ぶ)。
+    pub fn create_table(&mut self, name: &str, schema: &TableSchema) -> BiResult<()> {
         validate_name(name)?;
         let qname = quote_ident(name);
-        let cols: Vec<String> = data
-            .schema
+        let cols: Vec<String> = schema
             .columns
             .iter()
             .map(|c| format!("{} {}", quote_ident(&c.name), c.data_type.sqlite_type()))
@@ -48,14 +54,24 @@ impl Engine {
             .map_err(|e| e.to_string())?;
         self.conn
             .execute_batch(&format!("CREATE TABLE {qname} ({})", cols.join(", ")))
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())
+    }
 
-        let placeholders: Vec<&str> = (0..data.schema.columns.len()).map(|_| "?").collect();
+    /// 行チャンクを挿入する(チャンクごとに1トランザクション)
+    pub fn insert_rows(
+        &mut self,
+        name: &str,
+        schema: &TableSchema,
+        rows: &[Vec<Value>],
+    ) -> BiResult<()> {
+        validate_name(name)?;
+        let qname = quote_ident(name);
+        let placeholders: Vec<&str> = (0..schema.columns.len()).map(|_| "?").collect();
         let insert_sql = format!("INSERT INTO {qname} VALUES ({})", placeholders.join(","));
         let tx = self.conn.transaction().map_err(|e| e.to_string())?;
         {
             let mut stmt = tx.prepare(&insert_sql).map_err(|e| e.to_string())?;
-            for row in &data.rows {
+            for row in rows {
                 for (i, v) in row.iter().enumerate() {
                     let p = match v {
                         Value::Null => stmt.raw_bind_parameter(i + 1, rusqlite::types::Null),

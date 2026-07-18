@@ -31,10 +31,10 @@ Kohaku Studio の内部構造と設計方針をまとめます。
 
 ```
 CSV / Excel / SQLite / PostgreSQL / MySQL
-    │  Connector::load（ファイル系はソース未変更ならParquetキャッシュから高速復元）
+    │  Connector::load_stream（ファイル系はソース未変更ならParquetキャッシュから復元）
     ▼
-TableData（正規化済みの内部表形式）
-    │  Engine::register
+TableData の行チャンク（5万行ずつ）  ← RowSink で受け取る
+    │  Engine::insert_rows ＋ Parquetキャッシュへ並行書き込み
     ▼
 SQLite in-memory テーブル
     │  SQL（ユーザー入力 / チャート生成クエリ / 分析クエリ）
@@ -43,6 +43,18 @@ QueryResult
     ├─▶ テーブル表示 / チャート描画（UI）
     └─▶ bi-analytics（回帰・クラスタリング・統計）
 ```
+
+### ストリーミング取り込み
+
+大きなファイルでも全行を同時にメモリへ載せないよう、取り込みはチャンク単位で行います
+（200万行CSVでピーク905MB → 238MB。計測は [performance.md](performance.md)）。
+
+- `Connector::load_stream` が行チャンクを `RowSink` へ渡す。既定実装は `load()` の
+  結果を1チャンクで流すため、**既存コネクタは無改修**で動く（現在CSVのみが独自実装）
+- `bi-app` 側の `EngineSink` がチャンクごとに SQLite へ挿入し、同時に Parquet
+  キャッシュへも書き込む
+- 型推定は先頭2,000行のサンプルで行うため、サンプル外に型外れの値がありうる。
+  その場合キャッシュ書き込みだけを中止し（黙って値を変えない）、取り込みは続行する
 
 ## クレートの責務
 
@@ -79,6 +91,15 @@ pub trait Connector: Send + Sync {
     fn schemes(&self) -> &'static [&'static str]; // DB系コネクタが実装（例: "postgres"）
     fn list_objects(&self, path: &Path) -> BiResult<Vec<String>>;
     fn load(&self, path: &Path, object: &str, opts: &ImportOptions) -> BiResult<TableData>;
+    // 行チャンクを RowSink へ流す。既定実装は load() を1チャンクで流すだけなので、
+    // 大きなソースを扱うコネクタだけが独自実装すればよい
+    fn load_stream(&self, path: &Path, object: &str, opts: &ImportOptions,
+                   sink: &mut dyn RowSink) -> BiResult<()>;
+}
+
+pub trait RowSink {
+    fn start(&mut self, schema: &TableSchema) -> BiResult<()>;
+    fn push_rows(&mut self, rows: Vec<Vec<Value>>) -> BiResult<()>;
 }
 ```
 
