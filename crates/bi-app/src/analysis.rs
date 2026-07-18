@@ -1212,3 +1212,417 @@ pub fn api_test(state: &mut AppState, req: &Json) -> BiResult<Json> {
         "note": "この結果は探索的分析です。事前に仮説・指標・検定を決めていない場合、確証的な結論には追試が必要です。",
     }))
 }
+
+// ---------- テスト ----------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// テスト用の AppState を組み立てる(in-memory SQLiteのみ・外部依存なし)。
+    /// 分析API層の責務(ソート・集約・欠損除外・応答JSONの形)を検証する。
+    /// 統計計算そのものの正しさは bi-analytics 側のテストが担当する。
+    fn state_with(name: &str, cols: &[(&str, DataType)], rows: Vec<Vec<Value>>) -> AppState {
+        let mut st = AppState::new(false).unwrap();
+        register(&mut st, name, cols, rows);
+        st
+    }
+
+    fn register(st: &mut AppState, name: &str, cols: &[(&str, DataType)], rows: Vec<Vec<Value>>) {
+        let schema = TableSchema {
+            columns: cols
+                .iter()
+                .map(|(n, t)| ColumnSchema {
+                    name: n.to_string(),
+                    data_type: *t,
+                })
+                .collect(),
+        };
+        let row_count = rows.len();
+        let td = TableData {
+            schema: schema.clone(),
+            rows,
+        };
+        st.engine.register(name, &td).unwrap();
+        st.datasets.push(DatasetDef {
+            name: name.to_string(),
+            path: format!("({name})"),
+            object: String::new(),
+            options: ImportOptions::default(),
+            row_count,
+            schema: Some(schema),
+        });
+    }
+
+    fn ds(name: &str) -> Json {
+        json!({"kind": "dataset", "dataset": name})
+    }
+
+    fn f64s(v: &Json) -> Vec<f64> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_f64().unwrap_or(f64::NAN))
+            .collect()
+    }
+
+    // ---------- 時系列分解API ----------
+
+    /// 入力順がバラバラでも時間列でソートされ、同一時点は平均に集約され、
+    /// 欠損行は除外されたうえで分解される(API層の前処理の統合検証)
+    #[test]
+    fn test_timeseries_sorts_aggregates_and_drops() {
+        // 値 = 10 + パターン[位相](周期4)。t05 は2行(12と14 → 平均13)、
+        // t03 に欠損1行。行順は逆順にして投入する
+        let pattern = [3.0, -1.0, -2.0, 0.0];
+        let mut rows: Vec<Vec<Value>> = (0..16)
+            .map(|i| {
+                vec![
+                    Value::Text(format!("t{:02}", i + 1)),
+                    Value::Float(10.0 + pattern[i % 4]),
+                ]
+            })
+            .collect();
+        rows[4] = vec![Value::Text("t05".into()), Value::Float(12.0)];
+        rows.push(vec![Value::Text("t05".into()), Value::Float(14.0)]);
+        rows.push(vec![Value::Text("t03".into()), Value::Null]);
+        rows.reverse(); // ソート済みで渡さない
+        let mut st = state_with(
+            "ts",
+            &[("t", DataType::Utf8), ("v", DataType::Float64)],
+            rows,
+        );
+
+        let r = api_timeseries(
+            &mut st,
+            &json!({"source": ds("ts"), "x": "t", "y": "v", "period": 4, "model": "additive", "agg": "avg"}),
+        )
+        .unwrap();
+
+        assert_eq!(r["n_used"], 16);
+        assert_eq!(r["dropped"], 1); // 欠損行のみ(重複行は集約であって除外ではない)
+        let labels: Vec<&str> = r["labels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap())
+            .collect();
+        let expected: Vec<String> = (1..=16).map(|i| format!("t{i:02}")).collect();
+        assert_eq!(
+            labels,
+            expected.iter().map(|s| s.as_str()).collect::<Vec<_>>()
+        );
+        // 季節パターンが復元される(トレンド一定+完全周期なのでほぼ厳密)
+        let sp = f64s(&r["seasonal_pattern"]);
+        for (got, want) in sp.iter().zip(pattern.iter()) {
+            assert!((got - want).abs() < 0.01, "パターン: {got} != {want}");
+        }
+        assert!(r["seasonal_strength"].as_f64().unwrap() > 0.9);
+        // 移動平均の性質上、トレンドの先頭は null
+        assert!(r["trend"][0].is_null());
+        // 集約結果の確認: t05(位相0)は (12+14)/2 = 13
+        assert_eq!(f64s(&r["observed"])[4], 13.0);
+    }
+
+    /// 同一時点の集約は agg=sum で合計になる
+    #[test]
+    fn test_timeseries_agg_sum() {
+        let mut rows: Vec<Vec<Value>> = (1..=8)
+            .map(|i| vec![Value::Text(format!("t{i}")), Value::Float(5.0)])
+            .collect();
+        rows.push(vec![Value::Text("t3".into()), Value::Float(5.0)]); // t3 が2行
+        let mut st = state_with(
+            "ts2",
+            &[("t", DataType::Utf8), ("v", DataType::Float64)],
+            rows,
+        );
+        let req = |agg: &str| json!({"source": ds("ts2"), "x": "t", "y": "v", "period": 2, "model": "additive", "agg": agg});
+        let sum = api_timeseries(&mut st, &req("sum")).unwrap();
+        assert_eq!(f64s(&sum["observed"])[2], 10.0); // 5+5
+        let avg = api_timeseries(&mut st, &req("avg")).unwrap();
+        assert_eq!(f64s(&avg["observed"])[2], 5.0);
+    }
+
+    #[test]
+    fn test_timeseries_errors() {
+        let mut st = state_with(
+            "ts3",
+            &[("t", DataType::Utf8), ("v", DataType::Float64)],
+            vec![vec![Value::Text("a".into()), Value::Float(1.0)]],
+        );
+        // 列の指定漏れ
+        assert!(api_timeseries(&mut st, &json!({"source": ds("ts3"), "x": "t", "y": ""})).is_err());
+        // 時間列と値の列が同じ
+        assert!(
+            api_timeseries(&mut st, &json!({"source": ds("ts3"), "x": "v", "y": "v"})).is_err()
+        );
+        // 存在しない列
+        assert!(api_timeseries(
+            &mut st,
+            &json!({"source": ds("ts3"), "x": "nope", "y": "v"})
+        )
+        .is_err());
+    }
+
+    // ---------- SPC管理図API ----------
+
+    /// 入力を逆順にしても順序列でソートされ、ソート後の位置で
+    /// ルール違反(外れ値)が検出される
+    #[test]
+    fn test_spc_detects_outlier_after_sort() {
+        let mut rows: Vec<Vec<Value>> = (0..20)
+            .map(|i| {
+                let v = if i == 15 {
+                    20.0 // lot16 が外れ値
+                } else if i % 2 == 0 {
+                    9.5
+                } else {
+                    10.5
+                };
+                vec![Value::Text(format!("lot{:02}", i + 1)), Value::Float(v)]
+            })
+            .collect();
+        rows.reverse();
+        // lot03 を2行にする: 元の行(9.5)を10.0へ差し替え、9.0の行を追加(平均9.5で維持)
+        let pos = rows
+            .iter()
+            .position(|r| r[0] == Value::Text("lot03".into()))
+            .unwrap();
+        rows[pos][1] = Value::Float(10.0);
+        rows.push(vec![Value::Text("lot03".into()), Value::Float(9.0)]);
+        let mut st = state_with(
+            "spc",
+            &[("lot", DataType::Utf8), ("v", DataType::Float64)],
+            rows,
+        );
+
+        let r = api_spc(
+            &mut st,
+            &json!({"source": ds("spc"), "x": "lot", "value": "v", "agg": "avg"}),
+        )
+        .unwrap();
+
+        assert_eq!(r["n_used"], 20);
+        assert_eq!(r["labels"][15], "lot16");
+        let viols = r["violations"].as_array().unwrap();
+        assert_eq!(viols.len(), 1);
+        assert_eq!(viols[0]["index"], 15);
+        assert_eq!(viols[0]["rule"], 1);
+        let (ucl, lcl) = (r["ucl"].as_f64().unwrap(), r["lcl"].as_f64().unwrap());
+        assert!(ucl < 20.0 && lcl > 0.0 && ucl > lcl);
+    }
+
+    #[test]
+    fn test_spc_errors() {
+        let mut st = state_with(
+            "spc2",
+            &[("lot", DataType::Utf8), ("v", DataType::Float64)],
+            (0..5)
+                .map(|i| vec![Value::Text(format!("l{i}")), Value::Float(1.0)])
+                .collect(),
+        );
+        // 点数不足(8点未満)はライブラリ層のエラーがそのまま返る
+        let e = api_spc(
+            &mut st,
+            &json!({"source": ds("spc2"), "x": "lot", "value": "v"}),
+        )
+        .unwrap_err();
+        assert!(e.contains("8点以上"), "{e}");
+        // 順序列と値の列が同じ
+        assert!(api_spc(
+            &mut st,
+            &json!({"source": ds("spc2"), "x": "v", "value": "v"})
+        )
+        .is_err());
+    }
+
+    // ---------- 装置差分析API ----------
+
+    /// 平均が段階的に異なる3群 + 点数不足の1群。検定・事後比較・除外の統合検証
+    #[test]
+    fn test_tooldiff_three_groups() {
+        let mut rows: Vec<Vec<Value>> = Vec::new();
+        for (g, base) in [("A", 10.0), ("B", 12.0), ("C", 14.0)] {
+            for i in 0..10 {
+                let v = base + if i % 2 == 0 { -0.2 } else { 0.2 };
+                rows.push(vec![Value::Text(g.into()), Value::Float(v)]);
+            }
+        }
+        rows.push(vec![Value::Text("D".into()), Value::Float(5.0)]);
+        rows.push(vec![Value::Text("D".into()), Value::Float(5.1)]);
+        let mut st = state_with(
+            "td",
+            &[("g", DataType::Utf8), ("v", DataType::Float64)],
+            rows,
+        );
+
+        let r = api_tooldiff(
+            &mut st,
+            &json!({"source": ds("td"), "group": "g", "value": "v"}),
+        )
+        .unwrap();
+
+        assert_eq!(r["test"]["significant"], true);
+        assert!(r["test"]["name"].as_str().unwrap().contains("分散分析"));
+        // 3点未満の群Dは除外され、明示される
+        assert_eq!(r["dropped_small"][0], "D(n=2)");
+        let groups = r["groups"].as_array().unwrap();
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0]["label"], "A");
+        assert_eq!(groups[0]["n"], 10);
+        assert!((groups[0]["mean"].as_f64().unwrap() - 10.0).abs() < 1e-9);
+        // 事後比較は3ペアすべて有意(平均差2.0、群内SD約0.2)
+        let pairs = r["pairs"].as_array().unwrap();
+        assert_eq!(pairs.len(), 3);
+        assert!(pairs.iter().all(|p| p["significant"] == true));
+        // ストリップ図用の点は群の全点(10点)が入る
+        assert_eq!(groups[0]["points"].as_array().unwrap().len(), 10);
+    }
+
+    /// 2群は Welch の t検定になり、事後比較は付かない。SQLソース経由の解決も確認
+    #[test]
+    fn test_tooldiff_two_groups_via_sql_source() {
+        let mut rows: Vec<Vec<Value>> = Vec::new();
+        for (g, base) in [("X", 1.0), ("Y", 5.0)] {
+            for i in 0..6 {
+                let v = base + if i % 2 == 0 { -0.1 } else { 0.1 };
+                rows.push(vec![Value::Text(g.into()), Value::Float(v)]);
+            }
+        }
+        let mut st = state_with(
+            "td2",
+            &[("g", DataType::Utf8), ("v", DataType::Float64)],
+            rows,
+        );
+
+        let r = api_tooldiff(
+            &mut st,
+            &json!({"source": {"kind": "sql", "sql": "SELECT * FROM td2"}, "group": "g", "value": "v"}),
+        )
+        .unwrap();
+
+        assert!(r["test"]["name"].as_str().unwrap().contains("t検定"));
+        assert_eq!(r["test"]["significant"], true);
+        assert!(r["pairs"].is_null());
+    }
+
+    #[test]
+    fn test_tooldiff_errors() {
+        let mut st = state_with(
+            "td3",
+            &[("g", DataType::Utf8), ("v", DataType::Float64)],
+            (0..5)
+                .map(|_| vec![Value::Text("only".into()), Value::Float(1.0)])
+                .collect(),
+        );
+        // 群が1つしかない
+        let e = api_tooldiff(
+            &mut st,
+            &json!({"source": ds("td3"), "group": "g", "value": "v"}),
+        )
+        .unwrap_err();
+        assert!(e.contains("2つ未満"), "{e}");
+        // 同じ列を指定
+        assert!(api_tooldiff(
+            &mut st,
+            &json!({"source": ds("td3"), "group": "v", "value": "v"})
+        )
+        .is_err());
+    }
+
+    // ---------- ロットトレースAPI ----------
+
+    #[test]
+    fn test_lottrace_cross_dataset() {
+        let lot_rows = |vals: &[(&str, f64)]| {
+            vals.iter()
+                .map(|(l, v)| vec![Value::Text(l.to_string()), Value::Float(*v)])
+                .collect::<Vec<_>>()
+        };
+        let mut st = state_with(
+            "meas1",
+            &[("lot", DataType::Utf8), ("v", DataType::Float64)],
+            lot_rows(&[("L001", 1.0), ("L002", 2.0), ("L003", 3.0)]),
+        );
+        register(
+            &mut st,
+            "meas2",
+            &[("lot", DataType::Utf8), ("v", DataType::Float64)],
+            lot_rows(&[("L002", 20.0), ("L010", 21.0)]),
+        );
+        // lot 列を持たないデータセットは検索対象外になる
+        register(
+            &mut st,
+            "tools",
+            &[("tool", DataType::Utf8)],
+            vec![vec![Value::Text("T1".into())]],
+        );
+
+        // 完全一致: 2データセットから見つかる
+        let r = api_lottrace(&mut st, &json!({"column": "lot", "value": "L002"})).unwrap();
+        assert_eq!(r["searched_datasets"], 2);
+        let results = r["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["dataset"], "meas1");
+        assert_eq!(results[0]["rows"].as_array().unwrap().len(), 1);
+
+        // 部分一致: L00 で meas1 の3行 + meas2 の1行
+        let r = api_lottrace(
+            &mut st,
+            &json!({"column": "lot", "value": "L00", "partial": true}),
+        )
+        .unwrap();
+        let total: usize = r["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["rows"].as_array().unwrap().len())
+            .sum();
+        assert_eq!(total, 4);
+
+        // LIKEワイルドカードはエスケープされ、「%」は文字として検索される(全件マッチしない)
+        let r = api_lottrace(
+            &mut st,
+            &json!({"column": "lot", "value": "%", "partial": true}),
+        )
+        .unwrap();
+        assert!(r["results"].as_array().unwrap().is_empty());
+
+        // 存在しない列・空の値はエラー
+        assert!(api_lottrace(&mut st, &json!({"column": "nope", "value": "L001"})).is_err());
+        assert!(api_lottrace(&mut st, &json!({"column": "lot", "value": "  "})).is_err());
+    }
+
+    // ---------- エルボー法API ----------
+
+    #[test]
+    fn test_elbow_api_three_clusters_with_missing() {
+        // 明確な3クラスタ(2特徴量) + 欠損1行
+        let mut rows: Vec<Vec<Value>> = (0..60)
+            .map(|i| {
+                let offset = (i % 3) as f64 * 100.0;
+                vec![
+                    Value::Float(offset + (i / 3) as f64 * 0.1),
+                    Value::Float(offset - (i / 3) as f64 * 0.1),
+                ]
+            })
+            .collect();
+        rows.push(vec![Value::Null, Value::Float(0.0)]);
+        let mut st = state_with(
+            "el",
+            &[("f1", DataType::Float64), ("f2", DataType::Float64)],
+            rows,
+        );
+
+        let r = api_cluster_elbow(
+            &mut st,
+            &json!({"source": ds("el"), "features": ["f1", "f2"], "k_max": 10}),
+        )
+        .unwrap();
+
+        assert_eq!(r["suggested_k"], 3);
+        assert_eq!(r["dropped"], 1);
+        assert_eq!(r["n_used"], 60);
+        assert_eq!(r["ks"].as_array().unwrap().len(), 10);
+    }
+}
