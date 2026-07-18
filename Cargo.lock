@@ -175,14 +175,14 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "bi-analytics"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "bi-app"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "bi-analytics",
  "bi-connectors",
@@ -195,7 +195,7 @@ dependencies = [
 
 [[package]]
 name = "bi-connectors"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -215,7 +215,7 @@ dependencies = [
 
 [[package]]
 name = "bi-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde",
  "serde_json",
