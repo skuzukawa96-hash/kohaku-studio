@@ -2,7 +2,7 @@
 
 > データを磨き、洞察をかたちに。 — Rust-powered visual analytics.
 
-![Kohaku Studio のダッシュボード（棒・散布図・ヒストグラム）](docs/images/dashboard.jpg)
+![Kohaku Studio のダッシュボード（棒グラフ・推移・ウェハーマップ・SPC管理図）](docs/images/dashboard.png)
 
 **Kohaku Studio** は、Rust製の軽量なローカルファーストBIツールです。単一の実行ファイルがローカル
 Webサーバーを起動し、既定のブラウザでUIを開きます。Node / WebView / .NET などの外部ランタイムに
@@ -11,7 +11,7 @@ Webサーバーを起動し、既定のブラウザでUIを開きます。Node /
 - 🗂 **CSV / Excel / SQLite / PostgreSQL / MySQL** を取り込み、共通の内部表形式に正規化
 - 🔍 **SQL** ですべてのデータを横断集計（ソースの異なるデータ同士もJOIN可能）
 - 📊 **チャート**（棒 / 折れ線 / 散布図 / ヒストグラム / テーブル / ウェハーマップ / SPC管理図）を自前Canvasレンダラで描画
-- 📈 **分析**（データプロファイル / 回帰分析 / クラスタリング）を純Rustで実装
+- 📈 **分析**（データプロファイル / 回帰分析 / クラスタリング / 統計検定 / 時系列分解 / 装置差分析 / ロットトレース）を純Rustで実装
 - 💾 **プロジェクト**（データソース定義・チャート・クエリ履歴）を `.kohaku` ファイルに保存
 - 🔒 完全ローカル処理（`127.0.0.1`）。データの外部送信なし
 
@@ -160,8 +160,10 @@ APIエンドポイント（`/api/*`）にはローカルCSRF対策として、�
 cargo test
 ```
 
-コネクタ（CSV/Shift-JIS判定・Excel日付変換・SQLite）、クエリエンジン、型推定、
-統計・回帰・クラスタリングのユニットテストが含まれます。
+コネクタ（CSV/Shift-JIS判定・Excel日付変換・SQLite）、Parquetキャッシュ、クエリエンジン、
+型推定、統計・回帰・クラスタリング（エルボー法）・統計検定・時系列分解・SPC管理図の
+ユニットテストが含まれます。実DBが必要な PostgreSQL / MySQL のライブテストは
+環境変数（`KOHAKU_TEST_PG_URL` / `KOHAKU_TEST_MYSQL_URL`）があるときだけ実行されます。
 
 ---
 

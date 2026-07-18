@@ -14,10 +14,13 @@ Kohaku Studio の内部構造と設計方針をまとめます。
 │               分析API                          │
 ├─────────────────────────────────────────────┤
 │ bi-analytics  記述統計 / 相関 / OLS回帰 /       │
-│               k-means++（純Rust・依存なし）     │
+│               k-means++（エルボー法）/ 統計検定 │
+│               / 時系列分解 / SPC（純Rust）      │
 ├─────────────────────────────────────────────┤
 │ bi-connectors CSV / Excel(calamine) / SQLite   │
+│               / PostgreSQL / MySQL(sqlx)       │
 │               コネクタ + レジストリ             │
+│               + Parquetキャッシュ(arrow)        │
 ├─────────────────────────────────────────────┤
 │ bi-core       TableData / DataType /           │
 │               Connector trait / Project モデル  │
@@ -27,8 +30,8 @@ Kohaku Studio の内部構造と設計方針をまとめます。
 データは次のように流れます。
 
 ```
-CSV / Excel / SQLite
-    │  Connector::load
+CSV / Excel / SQLite / PostgreSQL / MySQL
+    │  Connector::load（ファイル系はソース未変更ならParquetキャッシュから高速復元）
     ▼
 TableData（正規化済みの内部表形式）
     │  Engine::register
@@ -46,9 +49,9 @@ QueryResult
 | クレート | 責務 | 主な依存 |
 | --- | --- | --- |
 | `bi-core` | 内部データモデル（`TableData` / `DataType` / `Value`）、`Connector` trait、`Project` モデル、型推定・列名正規化などの共通ユーティリティ | serde |
-| `bi-connectors` | 各データソースを `TableData` へ正規化するコネクタ群と、拡張子からコネクタを解決する `ConnectorRegistry` | csv, calamine, rusqlite, encoding_rs |
-| `bi-analytics` | 記述統計・ピアソン相関・OLS回帰・k-means++。外部依存なしの純Rust実装 | serde |
-| `bi-app` | ローカルHTTPサーバー、SQLite in-memory クエリエンジン、分析API、内蔵UI（HTML/CSS/JSをバイナリに埋め込み） | tiny_http, rusqlite, serde_json |
+| `bi-connectors` | 各データソース（CSV / Excel / SQLite / PostgreSQL / MySQL）を `TableData` へ正規化するコネクタ群、拡張子・URLスキームで解決する `ConnectorRegistry`、Parquetキャッシュ（ファイル系ソースの取り込み結果を保存し、未変更なら再パースせず復元） | csv, calamine, rusqlite, encoding_rs, sqlx, parquet / arrow |
+| `bi-analytics` | 記述統計・ピアソン相関・OLS回帰・k-means++（エルボー法によるk提案）・統計検定/効果量/多重比較（htest）・時系列分解・SPC管理図。外部依存なしの純Rust実装 | serde |
+| `bi-app` | ローカルHTTPサーバー、SQLite in-memory クエリエンジン、分析API、内蔵UI（HTML/CSS/JSをバイナリに埋め込み。チャートは `registerChartType` レジストリで拡張） | tiny_http, rusqlite, serde_json |
 
 ## 設計原則
 
@@ -73,6 +76,7 @@ pub struct TableData {
 pub trait Connector: Send + Sync {
     fn connector_type(&self) -> &'static str;
     fn extensions(&self) -> &'static [&'static str];
+    fn schemes(&self) -> &'static [&'static str]; // DB系コネクタが実装（例: "postgres"）
     fn list_objects(&self, path: &Path) -> BiResult<Vec<String>>;
     fn load(&self, path: &Path, object: &str, opts: &ImportOptions) -> BiResult<TableData>;
 }
