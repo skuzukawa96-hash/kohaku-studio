@@ -10,6 +10,52 @@ let currentDataset = null;
 let lastSqlResult = null;
 let editingChartId = null;
 
+// ---------- テーマ(ダーク / ライト) ----------
+// 配色は style.css のCSS変数に集約し、切り替えは data-theme 属性の付け替えだけ。
+// Canvasは色を自前で持つため、切替後に登録済みの再描画関数を呼び直す。
+
+/** 描画済みCanvasの再描画関数。テーマ切替時にまとめて呼ぶ */
+const REDRAW = new Map();
+
+/** 各描画関数の先頭で呼び、同じ引数で描き直せるようにする */
+function registerRedraw(canvas, fn) {
+  REDRAW.set(canvas, fn);
+}
+
+function applyTheme(name) {
+  const theme = name === "light" ? "light" : "dark";
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem("kohaku.theme", theme);
+  const btn = $("btn-theme");
+  if (btn) {
+    // 押すと切り替わる先を示す(ダーク表示中は「ライトへ」の太陽)
+    btn.textContent = theme === "dark" ? "🌙" : "☀️";
+    btn.title = theme === "dark" ? "ライトテーマに切り替え" : "ダークテーマに切り替え";
+  }
+  refreshThemeColors();
+  // DOMから外れたCanvas(再生成されたダッシュボード等)は登録を捨てる
+  for (const [canvas, fn] of [...REDRAW]) {
+    if (!canvas.isConnected) {
+      REDRAW.delete(canvas);
+      continue;
+    }
+    try {
+      fn();
+    } catch (e) {
+      /* 再描画に失敗しても操作は続行できる */
+    }
+  }
+}
+
+function initTheme() {
+  // ?theme=light / dark で明示指定できる(ブックマークやスクリーンショット用)。
+  // 指定がなければ前回の選択、それも無ければOSの設定に従う(既定はダーク)。
+  const forced = new URLSearchParams(location.search).get("theme");
+  const saved = localStorage.getItem("kohaku.theme");
+  const prefersLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
+  applyTheme(forced || saved || (prefersLight ? "light" : "dark"));
+}
+
 // ---------- 共通 ----------
 
 async function api(path, body) {
@@ -558,6 +604,7 @@ async function previewChart() {
 }
 
 function drawChartInto(canvas, tableDiv, spec, result) {
+  registerRedraw(canvas, () => drawChartInto(canvas, tableDiv, spec, result));
   if (spec.chart_type === "table") {
     canvas.classList.add("hidden");
     tableDiv.classList.remove("hidden");
@@ -613,7 +660,27 @@ function renderChartList() {
 
 // ---------- Canvasチャートレンダラ ----------
 
-const CHART_COLORS = { accent: "#4f8ef7", accent2: "#58c9a4", text: "#aab2bf", grid: "#333a46" };
+// チャートの色は style.css のテーマ変数から読む(テーマ切替に追随させるため)。
+// 参照側が持つ配列・オブジェクトを壊さないよう、再代入せず中身を書き換える。
+const CHART_COLORS = { accent: "", accent2: "", text: "", grid: "", axis: "", brand: "", danger: "", ok: "", warn: "", muted: "" };
+/** 系列の色パレット(最大8系列) */
+const SERIES_COLORS = [];
+
+/** テーマ変更時にCSS変数から色を読み直す */
+function refreshThemeColors() {
+  CHART_COLORS.accent = cssVar("--chart-primary", "#4f8ef7"); // データの既定色(UIのブランド色とは別)
+  CHART_COLORS.accent2 = cssVar("--accent2", "#4fc4a0");
+  CHART_COLORS.text = cssVar("--chart-text", "#a8b0be");
+  CHART_COLORS.grid = cssVar("--chart-grid", "#313743");
+  CHART_COLORS.axis = cssVar("--chart-axis", "#4a5361");
+  CHART_COLORS.brand = cssVar("--accent", "#e8a33d");
+  CHART_COLORS.danger = cssVar("--danger", "#e5707a");
+  CHART_COLORS.ok = cssVar("--ok", "#4fc4a0");
+  CHART_COLORS.warn = cssVar("--warn", "#e0a15c");
+  CHART_COLORS.muted = cssVar("--muted", "#8a93a3");
+  SERIES_COLORS.length = 0;
+  for (let i = 1; i <= 8; i++) SERIES_COLORS.push(cssVar(`--series-${i}`, "#4f8ef7"));
+}
 
 function setupCanvas(canvas) {
   const dpr = window.devicePixelRatio || 1;
@@ -654,9 +721,6 @@ function fmtTick(v) {
   if (Math.abs(v) >= 1e4) return (v / 1e3) + "k";
   return String(Math.round(v * 1000) / 1000);
 }
-
-/** 系列の色パレット(最大8系列) */
-const SERIES_COLORS = ["#4f8ef7", "#58c9a4", "#e0a15c", "#e06c75", "#b478e0", "#5cd0e0", "#e0d05c", "#8a94e0"];
 
 /** Y軸ラベル: 何をプロットしているかを常に明示する */
 function chartYLabel(spec) {
@@ -976,7 +1040,7 @@ function renderChart(canvas, spec, result) {
 
 // ---------- 分析 ----------
 
-const CLUSTER_COLORS = ["#4f8ef7", "#58c9a4", "#e0a15c", "#e06c75", "#b478e0", "#5cd0e0", "#e0d05c", "#8a94e0"];
+const CLUSTER_COLORS = SERIES_COLORS; // クラスタ色は系列色と同じパレットを使う
 let anColumns = []; // {name, numeric}
 let lastCluster = null;
 let lastClusterReq = null;
@@ -1072,7 +1136,7 @@ kohaku.registerChartType({
       ctx.fillRect(cx + 0.5, cy + 0.5, cell - 1, cell - 1);
     }
     // ウェハー外周円
-    ctx.strokeStyle = H.colors.grid;
+    ctx.strokeStyle = H.colors.axis;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.arc(ox + gridW / 2, oy + gridH / 2, Math.max(gridW, gridH) / 2 + cell * 0.6, 0, Math.PI * 2);
@@ -1149,9 +1213,9 @@ kohaku.registerChartType({
       ctx.textAlign = "left";
       ctx.fillText(name, m.l + pw + 4, py(v) + 4);
     };
-    hline(r.ucl, "#e06c75", "UCL");
+    hline(r.ucl, H.colors.danger, "UCL");
     hline(r.center, H.colors.accent2, "CL");
-    hline(r.lcl, "#e06c75", "LCL");
+    hline(r.lcl, H.colors.danger, "LCL");
 
     // 測定値の折れ線と点(ルール違反の点は赤・大きめ)
     ctx.strokeStyle = H.colors.accent;
@@ -1164,7 +1228,7 @@ kohaku.registerChartType({
     r.values.forEach((v, i) => {
       ctx.beginPath();
       ctx.arc(px(i), py(v), bad.has(i) ? 4 : 2, 0, Math.PI * 2);
-      ctx.fillStyle = bad.has(i) ? "#e06c75" : H.colors.accent;
+      ctx.fillStyle = bad.has(i) ? H.colors.danger : H.colors.accent;
       ctx.fill();
     });
 
@@ -1183,7 +1247,7 @@ kohaku.registerChartType({
     for (const v of r.violations) byRule[v.rule] = (byRule[v.rule] || 0) + 1;
     const parts = Object.keys(byRule).map((k) => `ルール${k}(${ruleNames[k]}): ${byRule[k]}点`);
     ctx.textAlign = "left";
-    ctx.fillStyle = r.violations.length ? "#e06c75" : H.colors.text;
+    ctx.fillStyle = r.violations.length ? H.colors.danger : H.colors.text;
     ctx.fillText(
       r.violations.length
         ? `異常あり — ${parts.join(" / ")}`
@@ -1388,7 +1452,7 @@ async function runToolDiff() {
     html +=
       '<div class="table-wrap"><table class="grid"><thead><tr><th>グループ</th><th>n</th><th>平均</th><th>SD</th><th>最小</th><th>最大</th></tr></thead><tbody>';
     gs.forEach((g, i) => {
-      const mark = i === 0 && t.significant ? ' style="color:#e06c75"' : "";
+      const mark = i === 0 && t.significant ? ' style="color:var(--danger)"' : "";
       html += `<tr${mark}><td>${esc(g.label)}</td><td class="num">${g.n.toLocaleString()}</td><td class="num">${fmtNum(g.mean, 3)}</td><td class="num">${fmtNum(g.sd, 3)}</td><td class="num">${fmtNum(g.min, 3)}</td><td class="num">${fmtNum(g.max, 3)}</td></tr>`;
     });
     html += "</tbody></table></div>";
@@ -1415,6 +1479,7 @@ async function runToolDiff() {
 
 /** ストリップ図: グループごとの測定値の分布をジッター付きの点で示す */
 function drawStripPlot(canvas, groups) {
+  registerRedraw(canvas, () => drawStripPlot(canvas, groups));
   canvas.classList.remove("hidden");
   const { ctx, w, h } = setupCanvas(canvas);
   const C = CHART_COLORS;
@@ -1658,7 +1723,7 @@ function assumptionTable(items) {
   if (!items || !items.length) return "";
   let h = '<h4>前提条件チェック</h4><div class="table-wrap"><table class="grid"><thead><tr><th>項目</th><th>統計量</th><th>p値</th><th>判定</th><th>コメント</th></tr></thead><tbody>';
   for (const a of items) {
-    const mark = a.passed ? '<span style="color:#58c9a4">OK</span>' : '<span style="color:#e0a15c">要注意</span>';
+    const mark = a.passed ? '<span style="color:var(--ok)">OK</span>' : '<span style="color:var(--warn)">要注意</span>';
     h += `<tr><td>${esc(a.name)}</td><td class="num">${fmtNum(a.statistic, 3)}</td><td class="num">${fmtP(a.p_value)}</td><td>${mark}</td><td>${esc(a.note)}</td></tr>`;
   }
   return h + "</tbody></table></div>";
@@ -1688,13 +1753,13 @@ function independenceWarning() {
   if ($("tst-mode").value !== "groups") return "";
   const v = $("tst-indep").value;
   if (v === "before_after") {
-    return '<div class="hint" style="color:#e0a15c">⚠ 同じ対象のbefore/after比較には、分析タイプ「2つの数値列」→「対応あり」を使用してください。独立群として検定すると誤った結果になります。</div>';
+    return '<div class="hint" style="color:var(--warn)">⚠ 同じ対象のbefore/after比較には、分析タイプ「2つの数値列」→「対応あり」を使用してください。独立群として検定すると誤った結果になります。</div>';
   }
   if (v === "repeated") {
-    return '<div class="hint" style="color:#e0a15c">⚠ 同じロット・装置・個体の繰り返し測定は独立ではない可能性があります。検定の前提(独立性)が崩れるため、結果は参考程度に留めてください。</div>';
+    return '<div class="hint" style="color:var(--warn)">⚠ 同じロット・装置・個体の繰り返し測定は独立ではない可能性があります。検定の前提(独立性)が崩れるため、結果は参考程度に留めてください。</div>';
   }
   if (v === "unknown") {
-    return '<div class="hint" style="color:#e0a15c">⚠ サンプルの独立性が不明です。同一対象・同一ロットからの繰り返し測定が含まれる場合、p値は当てになりません。</div>';
+    return '<div class="hint" style="color:var(--warn)">⚠ サンプルの独立性が不明です。同一対象・同一ロットからの繰り返し測定が含まれる場合、p値は当てになりません。</div>';
   }
   return "";
 }
@@ -1765,7 +1830,7 @@ async function tstRun() {
       if (t.ci) est += ` &nbsp; ${Math.round(t.ci.level * 100)}% 信頼区間 [${fmtNum(t.ci.low, 4)}, ${fmtNum(t.ci.high, 4)}]`;
       html += `<div class="est-box">${est}</div>`;
     }
-    const sigColor = t.p_value < (parseFloat($("tst-alpha").value) || 0.05) ? "#58c9a4" : "var(--muted)";
+    const sigColor = t.p_value < (parseFloat($("tst-alpha").value) || 0.05) ? "var(--ok)" : "var(--muted)";
     html += `<div class="interp" style="border-left:3px solid ${sigColor}">${esc(t.interpretation)}</div>`;
     if (t.warnings && t.warnings.length) html += "<ul>" + t.warnings.map((x) => `<li>⚠ ${esc(x)}</li>`).join("") + "</ul>";
     html += groupTable(t.groups);
@@ -1774,7 +1839,7 @@ async function tstRun() {
       html += `<h4>事後のペアワイズ比較 (${esc(r.posthoc.method)}, 補正: ${esc(r.correction)})</h4>`;
       html += '<div class="table-wrap"><table class="grid"><thead><tr><th>群A</th><th>群B</th><th>統計量</th><th>効果量</th><th>p (未補正)</th><th>p (補正後)</th><th>有意</th></tr></thead><tbody>';
       for (const p of r.posthoc.pairs) {
-        const mark = p.significant ? '<span style="color:#58c9a4">✔</span>' : "";
+        const mark = p.significant ? '<span style="color:var(--ok)">✔</span>' : "";
         html += `<tr><td>${esc(p.a)}</td><td>${esc(p.b)}</td><td class="num">${fmtNum(p.statistic, 3)}</td><td class="num">${fmtNum(p.effect, 3)}</td><td class="num">${fmtP(p.p)}</td><td class="num">${fmtP(p.p_adjusted)}</td><td>${mark}</td></tr>`;
       }
       html += "</tbody></table></div>";
@@ -2038,6 +2103,7 @@ async function suggestClusterK() {
 
 /** エルボー曲線(k vs WCSS)。提案kの位置を強調表示する */
 function drawElbowChart(canvas, r) {
+  registerRedraw(canvas, () => drawElbowChart(canvas, r));
   canvas.classList.remove("hidden");
   const { ctx, w, h } = setupCanvas(canvas);
   const C = CHART_COLORS;
@@ -2157,6 +2223,7 @@ async function runTimeseries() {
 
 /** 分解結果を3段(観測+トレンド / 季節成分 / 残差)で描画する */
 function drawDecomposition(canvas, r) {
+  registerRedraw(canvas, () => drawDecomposition(canvas, r));
   canvas.classList.remove("hidden");
   const { ctx, w, h } = setupCanvas(canvas);
   const C = CHART_COLORS;
@@ -2225,13 +2292,13 @@ function drawDecomposition(canvas, r) {
   };
 
   drawPanel(0, "観測値", [
-    { data: r.observed, color: "#5a6373" },
+    { data: r.observed, color: CHART_COLORS.muted },
     { data: r.trend, color: C.accent, width: 2 },
   ]);
   ctx.fillStyle = C.accent;
   ctx.fillText("── トレンド", m.l + 70, m.t - 7);
   drawPanel(1, "季節成分", [{ data: r.seasonal, color: C.accent2 }]);
-  drawPanel(2, "残差", [{ data: r.residual, color: "#e0a15c", points: true }],
+  drawPanel(2, "残差", [{ data: r.residual, color: CHART_COLORS.warn, points: true }],
     r.model === "multiplicative" ? 1 : 0);
 
   // X軸ラベル(最下段の下に数個)
@@ -2247,6 +2314,7 @@ function drawDecomposition(canvas, r) {
 
 // 汎用散布図(回帰線・対角線・クラスタ色分け対応)
 function drawAnScatter(canvas, pts, opts) {
+  registerRedraw(canvas, () => drawAnScatter(canvas, pts, opts));
   const { ctx, w, h } = setupCanvas(canvas);
   const C = CHART_COLORS;
   const m = { l: 60, r: 16, t: 14, b: 44 };
@@ -2572,7 +2640,7 @@ function opaquePngDataUrl(canvas) {
   out.width = canvas.width;
   out.height = canvas.height;
   const ctx = out.getContext("2d");
-  ctx.fillStyle = cssVar("--bg2", "#23272f");
+  ctx.fillStyle = cssVar("--bg2", "#1f232b");
   ctx.fillRect(0, 0, out.width, out.height);
   ctx.drawImage(canvas, 0, 0);
   return out.toDataURL("image/png");
@@ -2596,9 +2664,9 @@ function exportChartPng() {
   out.width = canvas.width;
   out.height = canvas.height + titleH;
   const ctx = out.getContext("2d");
-  ctx.fillStyle = cssVar("--bg2", "#23272f");
+  ctx.fillStyle = cssVar("--bg2", "#1f232b");
   ctx.fillRect(0, 0, out.width, out.height);
-  ctx.fillStyle = cssVar("--text", "#d7dce3");
+  ctx.fillStyle = cssVar("--text", "#dde2ea");
   ctx.font = `bold ${Math.round(14 * dpr)}px 'Yu Gothic UI', sans-serif`;
   ctx.fillText(spec.name, Math.round(12 * dpr), Math.round(20 * dpr));
   ctx.drawImage(canvas, 0, titleH);
@@ -2615,7 +2683,7 @@ function drawTableInto(ctx, spec, box) {
   ctx.clip();
   ctx.font = "10px 'Yu Gothic UI', sans-serif";
   if (!r) {
-    ctx.fillStyle = cssVar("--muted", "#8b93a1");
+    ctx.fillStyle = cssVar("--muted", "#8a93a3");
     ctx.fillText("(データ未取得)", box.x, box.y + 12);
     ctx.restore();
     return;
@@ -2623,9 +2691,9 @@ function drawTableInto(ctx, spec, box) {
   const cols = r.columns.slice(0, 6);
   const cw = box.w / cols.length;
   const lh = 16;
-  ctx.fillStyle = cssVar("--muted", "#8b93a1");
+  ctx.fillStyle = cssVar("--muted", "#8a93a3");
   cols.forEach((cname, ci) => ctx.fillText(String(cname), box.x + ci * cw, box.y + 10, cw - 6));
-  ctx.fillStyle = cssVar("--text", "#d7dce3");
+  ctx.fillStyle = cssVar("--text", "#dde2ea");
   const maxRows = Math.max(0, Math.floor((box.h - lh) / lh));
   r.rows.slice(0, maxRows).forEach((row, ri) => {
     cols.forEach((_, ci) => {
@@ -2662,19 +2730,19 @@ function exportDashPng() {
   out.height = Math.round(height * scale);
   const ctx = out.getContext("2d");
   ctx.scale(scale, scale);
-  ctx.fillStyle = cssVar("--bg", "#1b1e24");
+  ctx.fillStyle = cssVar("--bg", "#17191f");
   ctx.fillRect(0, 0, gr.width, height);
   cards.forEach((card, i) => {
     const r = card.getBoundingClientRect();
     const x = r.left - gr.left;
     const y = r.top - gr.top;
-    ctx.fillStyle = cssVar("--bg2", "#23272f");
-    ctx.strokeStyle = cssVar("--border", "#3a404d");
+    ctx.fillStyle = cssVar("--bg2", "#1f232b");
+    ctx.strokeStyle = cssVar("--border", "#363c48");
     roundRectPath(ctx, x, y, r.width, r.height, 6);
     ctx.fill();
     ctx.stroke();
     const h4 = card.querySelector("h4");
-    ctx.fillStyle = cssVar("--text", "#d7dce3");
+    ctx.fillStyle = cssVar("--text", "#dde2ea");
     ctx.font = "bold 13px 'Yu Gothic UI', sans-serif";
     ctx.fillText(h4 && h4.firstChild ? h4.firstChild.textContent : "", x + 10, y + 20, r.width - 20);
     const cv = card.querySelector("canvas");
@@ -2733,20 +2801,20 @@ function exportDashHtml() {
 <meta charset="utf-8">
 <title>${esc(name)}</title>
 <style>
-  body { margin: 0; padding: 20px; background: ${cssVar("--bg", "#1b1e24")}; color: ${cssVar("--text", "#d7dce3")};
+  body { margin: 0; padding: 20px; background: ${cssVar("--bg", "#17191f")}; color: ${cssVar("--text", "#dde2ea")};
          font-family: 'Yu Gothic UI', 'Hiragino Sans', sans-serif; }
   h1 { font-size: 20px; margin: 0 0 4px; }
-  .muted { color: ${cssVar("--muted", "#8b93a1")}; font-size: 12px; margin: 2px 0; }
+  .muted { color: ${cssVar("--muted", "#8a93a3")}; font-size: 12px; margin: 2px 0; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; margin-top: 16px; }
-  .card { background: ${cssVar("--bg2", "#23272f")}; border: 1px solid ${cssVar("--border", "#3a404d")};
+  .card { background: ${cssVar("--bg2", "#1f232b")}; border: 1px solid ${cssVar("--border", "#363c48")};
           border-radius: 6px; padding: 12px; }
   .card.wide { grid-column: 1 / -1; }
   .card h2 { font-size: 14px; margin: 0 0 8px; }
   .card img { width: 100%; height: auto; border-radius: 4px; }
   .twrap { max-height: 420px; overflow: auto; }
   table { border-collapse: collapse; width: 100%; font-size: 12px; }
-  th, td { border: 1px solid ${cssVar("--border", "#3a404d")}; padding: 3px 8px; text-align: left; }
-  th { background: ${cssVar("--bg3", "#2b303a")}; position: sticky; top: 0; }
+  th, td { border: 1px solid ${cssVar("--border", "#363c48")}; padding: 3px 8px; text-align: left; }
+  th { background: ${cssVar("--bg3", "#282d37")}; position: sticky; top: 0; }
 </style>
 </head>
 <body>
@@ -2811,6 +2879,9 @@ async function projectOk() {
 // ---------- 初期化 ----------
 
 function init() {
+  initTheme(); // 配色を確定してから描画を始める
+  $("btn-theme").onclick = () =>
+    applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
   document.querySelectorAll(".tab").forEach((t) => (t.onclick = () => switchTab(t.dataset.tab)));
   document.querySelectorAll(".close").forEach((b) => (b.onclick = () => $(b.dataset.close).classList.add("hidden")));
 

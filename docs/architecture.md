@@ -138,6 +138,17 @@ APIエンドポイント（`/api/*`）には次のガードがあります。
 
 ### 新しいチャートタイプ
 
+#### 配色とテーマ
+
+配色は `ui/style.css` のCSS変数に一元化しています（ダークが既定、`<html data-theme="light">` で
+ライト）。Canvasは色を自前で持つため、`refreshThemeColors()` がCSS変数を読んで
+`CHART_COLORS` / `SERIES_COLORS` を更新し、`registerRedraw()` で登録された描画関数を
+テーマ切替時に呼び直します。**ブランド色（`--accent`）はUI用、データの色は
+`--chart-primary` / `--series-N` と分けています**（データの意味を色で表すため、
+ブランド変更がチャートの読み取りに影響しないようにする）。
+
+#### 新しいチャートタイプの登録
+
 `bi-app/ui/app.js` の `kohaku.registerChartType()` で登録します
 （[plugin-api-draft.md](plugin-api-draft.md) 6章のチャートプラグインと同一のAPI。
 実装例はウェハーマップ）。データ取得SQLの組み立て（`buildQuery`）と

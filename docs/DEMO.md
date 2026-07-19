@@ -110,13 +110,38 @@ http://127.0.0.1:5590/#dashboard
 
 対応: `#data` `#sql` `#charts` `#analytics` `#dashboard`
 
+## テーマの指定
+
+ヘッダーの 🌙 / ☀️ ボタンで切り替えられ、選択はブラウザに保存されます。
+URLで明示することもできます（保存された設定より優先。スクリーンショットの撮影に便利）。
+
+```
+http://127.0.0.1:5590/?theme=light#dashboard
+http://127.0.0.1:5590/?theme=dark
+```
+
 ## スクリーンショットの撮影（メンテナ向け）
 
 READMEに載せる画面キャプチャは `docs/images/` に配置します。ヘッドレスブラウザで撮る例:
 
 ```bash
-# データとチャートを投入したサーバーを起動しておき、ダッシュボードを撮影
+# データとチャートを投入したサーバーを起動しておき、テーマごとに撮影
 msedge --headless=new --disable-gpu --hide-scrollbars \
-  --window-size=1280,900 --virtual-time-budget=4000 \
-  --screenshot="docs/images/dashboard.png" "http://127.0.0.1:5590/#dashboard"
+  --window-size=1280,900 --virtual-time-budget=9000 \
+  --screenshot="docs/images/dashboard.png" "http://127.0.0.1:5590/?theme=dark#dashboard"
+
+msedge --headless=new --disable-gpu --hide-scrollbars \
+  --window-size=1280,900 --virtual-time-budget=9000 \
+  --screenshot="docs/images/dashboard-light.png" "http://127.0.0.1:5590/?theme=light#dashboard"
 ```
+
+`?theme=` を付けないと、ヘッドレスブラウザ側の設定に左右されて意図しないテーマで
+撮れることがあります。
+
+### アイコンの作り直し
+
+アプリのアイコンは `crates/bi-app/assets/icon.svg` が原本です。
+UIのfavicon（`index.html` にインライン）とヘッダーロゴも同じ形を使っています。
+`icon.ico` を作り直す場合は、SVGを256pxでラスタライズしてから
+16/24/32/48/64/128/256 の多重サイズICOに変換し、`assets/icon.ico` を置き換えます
+（`build.rs` がWindowsビルド時に `embed-resource` で実行ファイルへ埋め込みます）。
