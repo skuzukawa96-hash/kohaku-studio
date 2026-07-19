@@ -65,7 +65,8 @@ bi-app        HTTPサーバー(tiny_http) / SQLite in-memoryクエリエンジ�
 - `crates/bi-app/src/server.rs` — HTTPサーバー。全APIは `POST /api/*`（JSON）で、`handle_api()` がディスパッチする。新しいAPIはここに追加。ローカルCSRF対策（POSTのみ / `Content-Type: application/json` 必須 / `Origin` は localhost のみ許可）を壊さないこと。
 - `crates/bi-app/src/engine.rs` — SQLite in-memory クエリエンジン。省メモリ用PRAGMA設定あり。
 - `crates/bi-app/src/analysis.rs` — 分析API（profile / regression / cluster / advise / test）。
-- `crates/bi-app/ui/` — 内蔵UI（vanilla JS + 自前Canvasレンダラ、約2,000行の `app.js`）。`include_str!` でバイナリに埋め込まれるため、**UIの変更も再ビルドが必要**。JSライブラリの追加は不可（オフライン完結・依存ゼロ）。注意: incrementalビルドが `ui/*.js` の変更を拾わないことがある。UI変更が反映されない時は `ui/` 配下のファイルを touch してからビルドするか `cargo clean -p bi-app` する。
+- `crates/bi-app/ui/` — 内蔵UI（vanilla JS + 自前Canvasレンダラ、約3,000行の `app.js`）。`include_str!` でバイナリに埋め込まれるため、**UIの変更も再ビルドが必要**。JSライブラリの追加は不可（オフライン完結・依存ゼロ）。注意: incrementalビルドが `ui/*.js` の変更を拾わないことがある。UI変更が反映されない時は `ui/` 配下のファイルを touch してからビルドするか `cargo clean -p bi-app` する。
+- **配色は `ui/style.css` のCSS変数に一元化する**（ダーク既定 / `<html data-theme="light">` でライト）。JSに色をハードコードしないこと。Canvasの色は `refreshThemeColors()` がCSS変数から読んで `CHART_COLORS` / `SERIES_COLORS` に入れる。新しい描画関数は先頭で `registerRedraw(canvas, () => 同じ引数で再描画)` を呼ぶ（テーマ切替時に描き直すため）。**ブランド色（`--accent`＝琥珀）はUI用、データの色は `--chart-primary` / `--series-N` を使う**（混ぜない）。
 - `crates/bi-analytics/src/` — `lib.rs`（統計・回帰・k-means++）、`htest.rs`（統計検定・効果量・多重比較）、`distributions.rs`（p値計算）、`advisor.rs`（検定の自動提案）。**このクレートは外部依存なし（serdeのみ）を維持する。**
 - `crates/bi-core/src/lib.rs` — `TableData` / `DataType` / `Value` / `Connector` trait / `BiResult`。
 - `crates/bi-connectors/src/parquet_cache.rs` — Parquetキャッシュ（v0.3）。ファイル系ソースの取り込み結果を `%LOCALAPPDATA%\kohaku-studio\cache\` に保存し、ソース未変更（サイズ+更新時刻一致）なら再パースせず復元する。キャッシュ失敗は常にソース読み込みへフォールバックし、ユーザーを止めない。DB接続は対象外。`--no-cache` で無効化。

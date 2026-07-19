@@ -1,14 +1,69 @@
+/* テーマ変数。ダークが既定で、<html data-theme="light"> でライトに切り替わる。
+   Canvasチャートの色もここから読む(app.js の refreshThemeColors)ため、
+   色の定義はこのファイルに一元化する。 */
 :root {
-  --bg: #1b1e24;
-  --bg2: #23272f;
-  --bg3: #2b303a;
-  --border: #3a404d;
-  --text: #d7dce3;
-  --muted: #8b93a1;
-  --accent: #4f8ef7;
-  --accent2: #58c9a4;
-  --danger: #e06c75;
+  --bg: #17191f;
+  --bg2: #1f232b;
+  --bg3: #282d37;
+  --border: #363c48;
+  --text: #dde2ea;
+  --muted: #8a93a3;
+  --accent: #e8a33d;
+  --accent-fg: #17191f;      /* アクセント背景の上に載せる文字色 */
+  --accent2: #4fc4a0;
+  --danger: #e5707a;
+  --ok: #4fc4a0;
+  --warn: #e0a15c;
+  --sel: #3a3122;            /* 選択中の行 */
+  --stripe: #1b1f26;         /* テーブルの縞 */
+  --shadow: rgba(0, 0, 0, .35);
+  --overlay: rgba(0, 0, 0, .55);
+  /* チャート用。データの色はブランド色(--accent)と分ける */
+  --chart-text: #a8b0be;
+  --chart-grid: #313743;
+  --chart-axis: #4a5361;     /* 枠線など、グリッドより強い線 */
+  --chart-primary: #4f8ef7;  /* 単一系列データの既定色 */
+  --series-1: #4f8ef7;
+  --series-2: #4fc4a0;
+  --series-3: #e8a33d;
+  --series-4: #e5707a;
+  --series-5: #b478e0;
+  --series-6: #5cd0e0;
+  --series-7: #d9c94f;
+  --series-8: #8a94e0;
 }
+
+:root[data-theme="light"] {
+  --bg: #f5f6f9;
+  --bg2: #ffffff;
+  --bg3: #eceff4;
+  --border: #d3d9e2;
+  --text: #232833;
+  --muted: #667085;
+  --accent: #9d6a0e;
+  --accent-fg: #ffffff;
+  --accent2: #17876a;
+  --danger: #c93b48;
+  --ok: #17876a;
+  --warn: #b4700c;
+  --sel: #fdf1dc;
+  --stripe: #f8f9fb;
+  --shadow: rgba(15, 20, 30, .12);
+  --overlay: rgba(20, 24, 32, .35);
+  --chart-text: #4b5563;
+  --chart-grid: #e1e5ec;
+  --chart-axis: #aab3c0;
+  --chart-primary: #2563eb;
+  --series-1: #2563eb;
+  --series-2: #0e9f6e;
+  --series-3: #c2710a;
+  --series-4: #d33d4a;
+  --series-5: #7c3aed;
+  --series-6: #0e8fa8;
+  --series-7: #9a7d0a;
+  --series-8: #4f46e5;
+}
+
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
@@ -25,9 +80,11 @@ body {
   padding: 6px 12px; background: var(--bg2);
   border-bottom: 1px solid var(--border);
 }
-.logo { font-weight: bold; font-size: 15px; }
+.logo { display: flex; align-items: center; gap: 7px; font-weight: bold; font-size: 15px; }
+.logo svg { display: block; }
 #project-name { color: var(--muted); }
 .spacer { flex: 1; }
+#btn-theme { padding: 4px 9px; font-size: 13px; line-height: 1; }
 
 #layout { flex: 1; display: flex; min-height: 0; }
 
@@ -47,7 +104,7 @@ body {
   display: flex; justify-content: space-between; align-items: center; gap: 4px;
 }
 #dataset-list li:hover { background: var(--bg3); }
-#dataset-list li.active { background: #31405e; }
+#dataset-list li.active { background: var(--sel); }
 #dataset-list .ds-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #dataset-list .ds-rows { color: var(--muted); font-size: 11px; white-space: nowrap; }
 #dataset-list .ds-del { visibility: hidden; color: var(--danger); border: none; background: none; cursor: pointer; }
@@ -68,16 +125,16 @@ body {
 
 button {
   background: var(--bg3); color: var(--text);
-  border: 1px solid var(--border); border-radius: 4px;
+  border: 1px solid var(--border); border-radius: 5px;
   padding: 5px 12px; cursor: pointer; font-size: 12px;
 }
 button:hover { border-color: var(--accent); }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.primary:hover { filter: brightness(1.1); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: bold; }
+button.primary:hover { filter: brightness(1.08); }
 
 input, select, textarea {
   background: var(--bg); color: var(--text);
-  border: 1px solid var(--border); border-radius: 4px;
+  border: 1px solid var(--border); border-radius: 5px;
   padding: 5px 8px; font-size: 12px; font-family: inherit;
 }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
@@ -96,7 +153,7 @@ table.grid th, table.grid td {
 table.grid th { background: var(--bg3); position: sticky; top: 0; }
 table.grid td.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.grid td.null { color: var(--muted); font-style: italic; }
-table.grid tr:nth-child(even) td { background: #20242b; }
+table.grid tr:nth-child(even) td { background: var(--stripe); }
 
 /* SQL */
 .sql-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
@@ -119,11 +176,11 @@ table.grid tr:nth-child(even) td { background: #20242b; }
   display: flex; justify-content: space-between; align-items: center;
 }
 #chart-list li:hover { background: var(--bg3); }
-#chart-list li.active { background: #31405e; }
+#chart-list li.active { background: var(--sel); }
 #chart-list .ch-del { color: var(--danger); border: none; background: none; cursor: pointer; }
 #chart-view { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 #chart-view h3 { margin: 0 0 6px; }
-#chart-canvas { width: 100%; height: 400px; background: var(--bg2); border-radius: 6px; }
+#chart-canvas { width: 100%; height: 400px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; }
 
 /* ダッシュボード */
 .dash-filter-label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
@@ -138,7 +195,7 @@ table.grid tr:nth-child(even) td { background: #20242b; }
   padding: 2px 8px; font-size: 12px; color: var(--text); margin-right: 6px;
 }
 .dash-chip button { background: none; border: none; color: var(--muted); cursor: pointer; padding: 0; font-size: 12px; }
-.dash-chip button:hover { color: #e06c75; }
+.dash-chip button:hover { color: var(--danger); }
 .dash-na { color: var(--muted); font-size: 11px; font-weight: normal; margin-left: 6px; }
 
 #dash-grid {
@@ -146,7 +203,10 @@ table.grid tr:nth-child(even) td { background: #20242b; }
   gap: 12px; overflow-y: auto;
 }
 @media (max-width: 900px) { #dash-grid { grid-template-columns: 1fr; } }
-.dash-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
+.dash-card {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 10px;
+  box-shadow: 0 1px 3px var(--shadow);
+}
 .dash-card.wide { grid-column: 1 / -1; }
 .dash-head { display: flex; align-items: center; gap: 2px; margin-bottom: 6px; }
 .dash-head h4 { flex: 1; margin: 0; font-size: 13px; }
@@ -191,7 +251,7 @@ table.grid tr:nth-child(even) td { background: #20242b; }
 .rec-box b { color: var(--accent); }
 .est-box { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; padding: 6px 12px; margin: 6px 0; }
 .interp { background: var(--bg2); padding: 8px 12px; border-radius: 4px; margin: 8px 0; }
-.an-canvas { width: 100%; height: 340px; background: var(--bg2); border-radius: 6px; flex: none; }
+.an-canvas { width: 100%; height: 340px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; flex: none; }
 .ts-canvas { height: 480px; } /* 時系列分解は3段重ねのため高め */
 .metrics { display: flex; gap: 16px; flex-wrap: wrap; margin: 6px 0; }
 .metric { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 14px; }
@@ -199,6 +259,9 @@ table.grid tr:nth-child(even) td { background: #20242b; }
 .metric .ml { font-size: 11px; color: var(--muted); }
 table.corr td { text-align: center; min-width: 52px; }
 table.corr td.diag { color: var(--muted); }
+.ok-text { color: var(--ok); }
+.warn-text { color: var(--warn); }
+.danger-text { color: var(--danger); }
 
 #status {
   padding: 4px 12px; background: var(--bg2);
@@ -209,13 +272,14 @@ table.corr td.diag { color: var(--muted); }
 
 /* モーダル */
 .modal-bg {
-  position: fixed; inset: 0; background: rgba(0,0,0,.55);
+  position: fixed; inset: 0; background: var(--overlay);
   display: flex; align-items: center; justify-content: center; z-index: 10;
 }
 .modal {
   background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
   width: 760px; max-width: 95vw; max-height: 90vh;
   display: flex; flex-direction: column;
+  box-shadow: 0 8px 32px var(--shadow);
 }
 .modal.small { width: 460px; }
 .modal-head {
@@ -232,7 +296,7 @@ table.corr td.diag { color: var(--muted); }
 #imp-entries { list-style: none; margin: 0; padding: 2px; }
 #imp-entries li { padding: 4px 8px; cursor: pointer; border-radius: 3px; display: flex; justify-content: space-between; }
 #imp-entries li:hover { background: var(--bg3); }
-#imp-entries li.sel { background: #31405e; }
+#imp-entries li.sel { background: var(--sel); }
 #imp-entries .fsize { color: var(--muted); font-size: 11px; }
 .imp-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
 .imp-row label { display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 12px; }

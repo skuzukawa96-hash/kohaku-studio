@@ -15,3 +15,6 @@ rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tiny_http = "0.12"
+
+[build-dependencies]
+embed-resource = "3.0.11"

@@ -1,0 +1,11 @@
+<!-- Kohaku Studio のアイコン(琥珀の原石)。
+     icon.ico の生成元。UIのfavicon・ヘッダーロゴも同じ形を使う。
+     .ico を作り直す場合は、このSVGを256pxでラスタライズして
+     16/24/32/48/64/128/256 の多重サイズICOに変換する。 -->
+<svg width="256" height="256" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+  <path d="M16 2 29 11 24 29 8 29 3 11Z" fill="#e8a33d"/>
+  <path d="M16 2 29 11 16 15Z" fill="#f7d190"/>
+  <path d="M16 2 3 11 16 15Z" fill="#c9832a"/>
+  <path d="M16 15 29 11 24 29Z" fill="#d99433"/>
+  <path d="M16 15 3 11 8 29Z" fill="#b8761f"/>
+</svg>
