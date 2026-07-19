@@ -426,6 +426,9 @@ function chartSpecFromForm() {
     series: $("ch-series").value,
     agg: $("ch-agg").value,
     bins: parseInt($("ch-bins").value, 10) || 20,
+    // Y軸の手動レンジ(空欄なら自動)
+    y_min: $("ch-ymin").value.trim(),
+    y_max: $("ch-ymax").value.trim(),
   };
 }
 
@@ -445,6 +448,8 @@ function loadChartToForm(spec) {
     $("ch-series").value = spec.series || "";
     $("ch-agg").value = spec.agg || "none";
     $("ch-bins").value = spec.bins || 20;
+    $("ch-ymin").value = spec.y_min ?? "";
+    $("ch-ymax").value = spec.y_max ?? "";
     previewChart();
   });
   renderChartList();
@@ -468,6 +473,7 @@ function updateChartFormVisibility() {
     $("ch-x-label").textContent = typeof f.x === "string" ? f.x : "X列";
     $("ch-y-label").textContent = typeof f.y === "string" ? f.y : "Y列";
     $("ch-value-label").textContent = typeof f.value === "string" ? f.value : "値の列";
+    $("ch-yrange-row").classList.toggle("hidden", !f.yrange);
     return;
   }
   $("ch-x-label").textContent = "X列";
@@ -478,6 +484,7 @@ function updateChartFormVisibility() {
   $("ch-x-row").classList.toggle("hidden", type === "table");
   $("ch-series-row").classList.toggle("hidden", type === "histogram" || type === "table");
   $("ch-agg-row").classList.toggle("hidden", type === "histogram" || type === "table" || type === "scatter");
+  $("ch-yrange-row").classList.toggle("hidden", type === "table");
 }
 
 function renderDatasetSelect() {
@@ -718,6 +725,45 @@ function niceTicks(min, max, count) {
   return ticks;
 }
 
+/** 指定レンジ[min, max]の内側だけに目盛りを置く(範囲は広げない)。
+ *  手動レンジ指定用。自動レンジは niceTicks(範囲を広げてデータを覆う)を使う。 */
+function ticksWithin(min, max, count) {
+  if (!isFinite(min) || !isFinite(max) || !(max > min)) return [min, max];
+  const step0 = (max - min) / Math.max(1, count);
+  const mag = Math.pow(10, Math.floor(Math.log10(step0)));
+  let step = mag * 10;
+  for (const m of [1, 2, 2.5, 5, 10]) {
+    if (mag * m >= step0) { step = mag * m; break; }
+  }
+  const eps = step * 1e-9;
+  const ticks = [];
+  const first = Math.ceil((min - eps) / step);
+  for (let i = first; i * step <= max + eps; i++) ticks.push(Math.round(i * step * 1e9) / 1e9);
+  // 目盛りが1本も入らない極端なレンジでは両端を使う
+  return ticks.length >= 2 ? ticks : [min, max];
+}
+
+/** 数値として有効なら返す。空欄・不正値は null(=自動) */
+function numOrNull(v) {
+  if (v === null || v === undefined || String(v).trim() === "") return null;
+  const n = Number(v);
+  return isFinite(n) ? n : null;
+}
+
+/** 自動計算した目盛りに、spec の手動Y軸レンジ(y_min / y_max)を重ねる。
+ *  片側だけの指定も可。不正(最小≧最大)なら自動のままにする。
+ *  戻り値: {ticks, min, max} */
+function applyManualRange(spec, autoTicks, count) {
+  const auto = { ticks: autoTicks, min: autoTicks[0], max: autoTicks[autoTicks.length - 1] };
+  const lo = numOrNull(spec && spec.y_min);
+  const hi = numOrNull(spec && spec.y_max);
+  if (lo === null && hi === null) return auto;
+  const min = lo !== null ? lo : auto.min;
+  const max = hi !== null ? hi : auto.max;
+  if (!(max > min)) return auto; // 逆転・同値は無視して自動に戻す
+  return { ticks: ticksWithin(min, max, count || 5), min, max };
+}
+
 function fmtTick(v) {
   if (Math.abs(v) >= 1e6) return (v / 1e6) + "M";
   if (Math.abs(v) >= 1e4) return (v / 1e3) + "k";
@@ -867,17 +913,17 @@ function renderChart(canvas, spec, result) {
       if (b >= nb) b = nb - 1;
       counts[b]++;
     }
-    const yMax = Math.max(...counts);
-    const yTicks = niceTicks(0, yMax, 5);
-    drawAxes(yTicks, 0, yTicks[yTicks.length - 1] || 1);
-    const yTop = yTicks[yTicks.length - 1] || 1;
+    const hRange = applyManualRange(spec, niceTicks(0, Math.max(...counts), 5), 5);
+    drawAxes(hRange.ticks, hRange.min, hRange.max);
+    const hpy = (v) => m.t + ph - ((v - hRange.min) / ((hRange.max - hRange.min) || 1)) * ph;
     clipPlot(() => {
       ctx.fillStyle = C.accent;
       for (let b = 0; b < nb; b++) {
         const bx = m.l + (b / nb) * pw;
         const bw = pw / nb - 1;
-        const bh = (counts[b] / yTop) * ph;
-        ctx.fillRect(bx, m.t + ph - bh, Math.max(1, bw), bh);
+        // 棒は軸の下端から度数の高さまで(手動レンジで下端が0でなくても崩れない)
+        const top = hpy(counts[b]);
+        ctx.fillRect(bx, top, Math.max(1, bw), m.t + ph - top);
       }
     });
     // X軸ラベル
@@ -926,8 +972,9 @@ function renderChart(canvas, spec, result) {
     const xMin = Math.min(...xs), xMax = Math.max(...xs);
     // 散布図・折れ線は0を強制しない(歩留まり86〜96%を0〜100で描くと変化が読めない)。
     // 棒グラフは長さが値を表すため0を含める(下の分岐)。
-    const yTicks = niceTicks(Math.min(...ys), Math.max(...ys), 5);
-    const yMin = yTicks[0], yMax = yTicks[yTicks.length - 1];
+    const yRange = applyManualRange(spec, niceTicks(Math.min(...ys), Math.max(...ys), 5), 5);
+    const yTicks = yRange.ticks;
+    const yMin = yRange.min, yMax = yRange.max;
     drawAxes(yTicks, yMin, yMax);
     const px = (x) => m.l + ((x - xMin) / ((xMax - xMin) || 1)) * pw;
     const py = (y) => m.t + ph - ((y - yMin) / ((yMax - yMin) || 1)) * ph;
@@ -1009,8 +1056,13 @@ function renderChart(canvas, spec, result) {
   });
   const allVals = vals.flatMap((mp) => [...mp.values()]);
   if (!allVals.length) return noData();
-  const yTicks = niceTicks(Math.min(0, Math.min(...allVals)), Math.max(0, Math.max(...allVals)), 5);
-  const yMin = yTicks[0], yMax = yTicks[yTicks.length - 1];
+  const barRange = applyManualRange(
+    spec,
+    niceTicks(Math.min(0, Math.min(...allVals)), Math.max(0, Math.max(...allVals)), 5),
+    5
+  );
+  const yTicks = barRange.ticks;
+  const yMin = barRange.min, yMax = barRange.max;
   drawAxes(yTicks, yMin, yMax);
   const py = (y) => m.t + ph - ((y - yMin) / ((yMax - yMin) || 1)) * ph;
   const groupW = pw / cats.length;
@@ -1086,6 +1138,8 @@ const kohaku = {
 /** 登録チャートへ渡す描画ユーティリティ(本体チャートと見た目を揃えるため) */
 const CHART_HELPERS = {
   niceTicks,
+  ticksWithin,
+  applyManualRange,
   fmtTick,
   colors: CHART_COLORS,
   seriesColors: SERIES_COLORS,
@@ -1184,7 +1238,7 @@ kohaku.registerChartType({
 kohaku.registerChartType({
   type: "spc",
   label: "SPC管理図",
-  form: { x: "時間/順序列", value: "測定値", agg: true },
+  form: { x: "時間/順序列", value: "測定値", agg: true, yrange: true },
   async fetch(spec, base) {
     if (!spec.value) throw new Error("測定値の列を指定してください");
     return api("/api/analyze/spc", {
@@ -1200,9 +1254,11 @@ kohaku.registerChartType({
     const m = { l: 60, r: 52, t: 16, b: 40 };
     const pw = w - m.l - m.r;
     const ph = h - m.t - m.b;
-    const yTicks = H.niceTicks(Math.min(r.lcl, ...r.values), Math.max(r.ucl, ...r.values), 5);
-    const yMin = yTicks[0];
-    const yMax = yTicks[yTicks.length - 1];
+    const auto = H.niceTicks(Math.min(r.lcl, ...r.values), Math.max(r.ucl, ...r.values), 5);
+    const range = H.applyManualRange(spec, auto, 5);
+    const yTicks = range.ticks;
+    const yMin = range.min;
+    const yMax = range.max;
     const px = (i) => m.l + (n <= 1 ? 0 : (i / (n - 1)) * pw);
     const py = (v) => m.t + ph - ((v - yMin) / (yMax - yMin || 1)) * ph;
 
@@ -1218,7 +1274,14 @@ kohaku.registerChartType({
       ctx.fillText(H.fmtTick(t), m.l - 6, py(t) + 4);
     }
     // 中心線と管理限界線(破線+右端にラベル)
+    // 表示範囲外の管理限界線は描かない(枠外に線とラベルが出て軸ラベルと重なるため)。
+    // 手動レンジで管理限界が隠れた場合は、後段の情報行で明示する。
+    const hidden = [];
     const hline = (v, color, name) => {
+      if (v < yMin || v > yMax) {
+        hidden.push(name);
+        return;
+      }
       ctx.strokeStyle = color;
       ctx.setLineDash([5, 4]);
       ctx.beginPath();
@@ -1270,10 +1333,11 @@ kohaku.registerChartType({
     const parts = Object.keys(byRule).map((k) => `ルール${k}(${ruleNames[k]}): ${byRule[k]}点`);
     ctx.textAlign = "left";
     ctx.fillStyle = r.violations.length ? H.colors.danger : H.colors.text;
+    const note = hidden.length ? `(${hidden.join("・")}は表示範囲外)` : "";
     ctx.fillText(
-      r.violations.length
+      (r.violations.length
         ? `異常あり — ${parts.join(" / ")}`
-        : `異常なし(σ=${H.fmtTick(r.sigma)}, n=${r.n_used})`,
+        : `異常なし(σ=${H.fmtTick(r.sigma)}, n=${r.n_used})`) + note,
       m.l,
       h - 8
     );
@@ -2989,6 +3053,9 @@ function init() {
   $("ch-source-kind").onchange = () => { updateChartFormVisibility(); loadChartColumns(); };
   $("ch-dataset").onchange = loadChartColumns;
   $("ch-sql").onchange = loadChartColumns;
+  // Y軸レンジは見た目の微調整なので、入力したらすぐプレビューへ反映する
+  $("ch-ymin").onchange = previewChart;
+  $("ch-ymax").onchange = previewChart;
   $("btn-ch-preview").onclick = previewChart;
   $("btn-ch-save").onclick = saveChart;
   $("btn-ch-png").onclick = exportChartPng;
