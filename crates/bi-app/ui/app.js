@@ -695,24 +695,26 @@ function setupCanvas(canvas) {
   return { ctx, w, h };
 }
 
+/** 軸の目盛り。返した目盛りの最小〜最大が描画レンジになるため、
+ *  データ範囲[min, max]を必ず覆うように両端をステップの倍数へ広げる。
+ *  (片側だけ広げるとプロットが枠外に飛び出し、軸ラベルとも重なる) */
 function niceTicks(min, max, count) {
   if (!isFinite(min) || !isFinite(max)) return [0, 1];
+  if (min > max) [min, max] = [max, min];
   if (min === max) { min -= 1; max += 1; }
-  const span = max - min;
-  const step0 = span / Math.max(1, count);
+  const step0 = (max - min) / Math.max(1, count);
   const mag = Math.pow(10, Math.floor(Math.log10(step0)));
-  let step = mag;
+  let step = mag * 10;
   for (const m of [1, 2, 2.5, 5, 10]) {
     if (mag * m >= step0) { step = mag * m; break; }
   }
+  const eps = step * 1e-9; // 浮動小数の誤差でデータ端が外れないように緩める
+  const lo = Math.floor((min + eps) / step) * step;
+  const hi = Math.ceil((max - eps) / step) * step;
+  const n = Math.max(1, Math.round((hi - lo) / step));
   const ticks = [];
-  let t = Math.ceil(min / step) * step;
-  for (; t <= max + step * 1e-9; t += step) ticks.push(Math.round(t * 1e9) / 1e9);
-  // 最終目盛りがデータ最大値を下回るとプロットが枠からはみ出すため、1段追加して覆う
-  if (!ticks.length || ticks[ticks.length - 1] < max - step * 1e-9) {
-    const base = ticks.length ? ticks[ticks.length - 1] : Math.floor(min / step) * step;
-    ticks.push(Math.round((base + step) * 1e9) / 1e9);
-  }
+  // 加算の誤差蓄積を避けるため、インデックスから直接計算する
+  for (let i = 0; i <= n; i++) ticks.push(Math.round((lo + i * step) * 1e9) / 1e9);
   return ticks;
 }
 
@@ -836,6 +838,17 @@ function renderChart(canvas, spec, result) {
     }
   };
 
+  /** データの描画はプロット領域でクリップする。軸レンジの計算に想定外があっても
+   *  軸ラベルの上に描かれないための保険(手動レンジ指定時にも効く) */
+  const clipPlot = (draw) => {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(m.l, m.t, pw, ph);
+    ctx.clip();
+    draw();
+    ctx.restore();
+  };
+
   const noData = () => {
     ctx.fillStyle = C.text;
     ctx.textAlign = "center";
@@ -858,13 +871,15 @@ function renderChart(canvas, spec, result) {
     const yTicks = niceTicks(0, yMax, 5);
     drawAxes(yTicks, 0, yTicks[yTicks.length - 1] || 1);
     const yTop = yTicks[yTicks.length - 1] || 1;
-    ctx.fillStyle = C.accent;
-    for (let b = 0; b < nb; b++) {
-      const bx = m.l + (b / nb) * pw;
-      const bw = pw / nb - 1;
-      const bh = (counts[b] / yTop) * ph;
-      ctx.fillRect(bx, m.t + ph - bh, Math.max(1, bw), bh);
-    }
+    clipPlot(() => {
+      ctx.fillStyle = C.accent;
+      for (let b = 0; b < nb; b++) {
+        const bx = m.l + (b / nb) * pw;
+        const bw = pw / nb - 1;
+        const bh = (counts[b] / yTop) * ph;
+        ctx.fillRect(bx, m.t + ph - bh, Math.max(1, bw), bh);
+      }
+    });
     // X軸ラベル
     ctx.fillStyle = C.text;
     ctx.textAlign = "center";
@@ -909,13 +924,15 @@ function renderChart(canvas, spec, result) {
     if (!flat.length) return noData();
     const xs = flat.map((p) => p[0]), ys = flat.map((p) => p[1]);
     const xMin = Math.min(...xs), xMax = Math.max(...xs);
-    const yTicks = niceTicks(Math.min(0, Math.min(...ys)), Math.max(...ys), 5);
+    // 散布図・折れ線は0を強制しない(歩留まり86〜96%を0〜100で描くと変化が読めない)。
+    // 棒グラフは長さが値を表すため0を含める(下の分岐)。
+    const yTicks = niceTicks(Math.min(...ys), Math.max(...ys), 5);
     const yMin = yTicks[0], yMax = yTicks[yTicks.length - 1];
     drawAxes(yTicks, yMin, yMax);
     const px = (x) => m.l + ((x - xMin) / ((xMax - xMin) || 1)) * pw;
     const py = (y) => m.t + ph - ((y - yMin) / ((yMax - yMin) || 1)) * ph;
     const rad = spec.chart_type === "line" ? (flat.length > 200 ? 0 : 2.5) : Math.max(1.5, 4 - Math.log10(flat.length + 1));
-    seriesPts.forEach((pts, k) => {
+    clipPlot(() => seriesPts.forEach((pts, k) => {
       const col = color(k);
       if (spec.chart_type === "line") {
         ctx.strokeStyle = col;
@@ -934,7 +951,7 @@ function renderChart(canvas, spec, result) {
         }
         ctx.globalAlpha = 1;
       }
-    });
+    }));
     // X軸
     ctx.fillStyle = C.text;
     ctx.textAlign = "center";
@@ -999,7 +1016,7 @@ function renderChart(canvas, spec, result) {
   const groupW = pw / cats.length;
   const inner = groupW * 0.76;
   const barW = inner / seriesNames.length;
-  seriesNames.forEach((n, k) => {
+  clipPlot(() => seriesNames.forEach((n, k) => {
     ctx.fillStyle = color(k);
     const mp = vals[k];
     cats.forEach((c, i) => {
@@ -1011,7 +1028,7 @@ function renderChart(canvas, spec, result) {
       const bw = Math.max(1, barW - (seriesNames.length > 1 ? 1 : 0));
       ctx.fillRect(x0, v >= 0 ? y0 : py(0), bw, Math.max(1, hh));
     });
-  });
+  }));
   // カテゴリラベル
   ctx.fillStyle = C.text;
   const rotate = cats.length > 8 || cats.some((c) => c.length > 6);
@@ -1217,7 +1234,11 @@ kohaku.registerChartType({
     hline(r.center, H.colors.accent2, "CL");
     hline(r.lcl, H.colors.danger, "LCL");
 
-    // 測定値の折れ線と点(ルール違反の点は赤・大きめ)
+    // 測定値の折れ線と点(ルール違反の点は赤・大きめ)。プロット領域でクリップする
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(m.l, m.t, pw, ph);
+    ctx.clip();
     ctx.strokeStyle = H.colors.accent;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
@@ -1231,6 +1252,7 @@ kohaku.registerChartType({
       ctx.fillStyle = bad.has(i) ? H.colors.danger : H.colors.accent;
       ctx.fill();
     });
+    ctx.restore();
 
     // X軸ラベル(数個に間引き)
     ctx.fillStyle = H.colors.text;
@@ -1514,6 +1536,10 @@ function drawStripPlot(canvas, groups) {
   ctx.setLineDash([]);
 
   const jitterW = Math.min(40, (pw / groups.length) * 0.35);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(m.l, m.t, pw, ph);
+  ctx.clip();
   groups.forEach((g, gi) => {
     // 点(決定的ジッターで再描画しても同じ見た目にする)
     ctx.globalAlpha = 0.55;
@@ -1533,11 +1559,12 @@ function drawStripPlot(canvas, groups) {
     ctx.lineTo(gx(gi) + jitterW, py(g.mean));
     ctx.stroke();
     ctx.lineWidth = 1;
-    // グループ名
-    ctx.fillStyle = C.text;
-    ctx.textAlign = "center";
-    ctx.fillText(g.label, gx(gi), m.t + ph + 16, pw / groups.length - 8);
   });
+  ctx.restore();
+  // グループ名(クリップ外に描く)
+  ctx.fillStyle = C.text;
+  ctx.textAlign = "center";
+  groups.forEach((g, gi) => ctx.fillText(g.label, gx(gi), m.t + ph + 16, pw / groups.length - 8));
   ctx.textAlign = "left";
   ctx.fillStyle = C.accent2;
   ctx.fillText("--- 全体平均", m.l + 4, m.t - 4);
@@ -1954,7 +1981,8 @@ async function runProfile() {
           if (i === j) { html += '<td class="diag">1</td>'; return; }
           if (v === null) { html += "<td>—</td>"; return; }
           const alpha = Math.min(0.85, Math.abs(v));
-          const bg = v >= 0 ? `rgba(79,142,247,${alpha})` : `rgba(224,108,117,${alpha})`;
+          // 正の相関=データ既定色 / 負の相関=danger。どちらもテーマ変数から取る
+          const bg = rgbaVar(v >= 0 ? "--chart-primary" : "--danger", alpha);
           html += `<td style="background:${bg}">${fmtNum(v, 2)}</td>`;
         });
         html += "</tr>";
@@ -2148,7 +2176,11 @@ function drawElbowChart(canvas, r) {
   ctx.fillStyle = C.accent2;
   ctx.fillText(`提案 k=${r.suggested_k}`, px(r.suggested_k), m.t + 10);
 
-  // 曲線と点
+  // 曲線と点(プロット領域でクリップ)
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(m.l, m.t, pw, ph);
+  ctx.clip();
   ctx.strokeStyle = C.accent;
   ctx.lineWidth = 2;
   ctx.beginPath();
@@ -2164,6 +2196,7 @@ function drawElbowChart(canvas, r) {
     ctx.fillStyle = k === r.suggested_k ? C.accent2 : C.accent;
     ctx.fill();
   });
+  ctx.restore();
   ctx.textAlign = "left";
 }
 
@@ -2262,6 +2295,11 @@ function drawDecomposition(canvas, r) {
       ctx.stroke();
       ctx.setLineDash([]);
     }
+    // パネルからはみ出さないようにクリップ
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(m.l, top, w - m.l - m.r, panelH);
+    ctx.clip();
     for (const s of seriesList) {
       if (s.points) {
         ctx.fillStyle = s.color;
@@ -2289,6 +2327,7 @@ function drawDecomposition(canvas, r) {
         ctx.lineWidth = 1;
       }
     }
+    ctx.restore();
   };
 
   drawPanel(0, "観測値", [
@@ -2352,10 +2391,16 @@ function drawAnScatter(canvas, pts, opts) {
     if (px(t) >= m.l - 1 && px(t) <= w - m.r + 1) ctx.fillText(fmtTick(t), px(t), m.t + ph + 6);
   }
   const rad = Math.max(1.5, 4 - Math.log10(valid.length + 1));
+  // データの描画はプロット領域でクリップする。回帰直線はX範囲の両端で
+  // Y範囲を超えることがあり、そのままだと軸ラベルの上に描かれてしまう
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(m.l, m.t, pw, ph);
+  ctx.clip();
   for (const p of valid) {
     ctx.fillStyle = opts.colored
       ? CLUSTER_COLORS[(p.c || 0) % CLUSTER_COLORS.length] + "b0"
-      : "rgba(79,142,247,0.55)";
+      : C.accent + "8c";
     ctx.beginPath();
     ctx.arc(px(p.x), py(p.y), rad, 0, Math.PI * 2);
     ctx.fill();
@@ -2376,6 +2421,8 @@ function drawAnScatter(canvas, pts, opts) {
     ctx.stroke();
     ctx.setLineDash([]);
   }
+  ctx.restore();
+  ctx.lineWidth = 1;
   ctx.fillStyle = C.text;
   ctx.textAlign = "center"; ctx.textBaseline = "top";
   ctx.fillText(opts.xlab || "", m.l + pw / 2, h - 14);
@@ -2615,6 +2662,13 @@ async function renderDashboard(force) {
 function cssVar(name, fallback) {
   const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   return v || fallback;
+}
+
+/** テーマ変数の色(#rrggbb)を半透明のrgba()にする。ヒートマップの塗り用 */
+function rgbaVar(name, alpha) {
+  const hex = cssVar(name, "#4f8ef7").replace("#", "");
+  const n = parseInt(hex.length === 3 ? hex.replace(/./g, (c) => c + c) : hex.slice(0, 6), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 
 function tsStamp() {
