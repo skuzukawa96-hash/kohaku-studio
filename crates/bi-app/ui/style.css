@@ -170,6 +170,11 @@ table.grid tr:nth-child(even) td { background: var(--stripe); }
 #chart-editor label { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; color: var(--muted); }
 #chart-editor textarea { font-family: Consolas, monospace; }
 .btn-row { display: flex; gap: 8px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
+/* Y軸レンジの手動指定(空欄なら自動) */
+.ch-range { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; color: var(--muted); }
+.ch-range .range-inputs { display: flex; align-items: center; gap: 6px; }
+.ch-range input { width: 100%; min-width: 0; }
+.ch-range .range-sep { color: var(--muted); }
 #chart-list { list-style: none; margin: 0; padding: 0; }
 #chart-list li {
   padding: 5px 8px; border-radius: 4px; cursor: pointer;
