@@ -6,6 +6,8 @@
 //!   kohaku-studio.exe --port 8080        ... ポート指定
 //!   kohaku-studio.exe --no-browser      ... ブラウザを開かない
 //!   kohaku-studio.exe --no-cache        ... Parquetキャッシュを使わない
+//!   kohaku-studio.exe --enable-plugins  ... プラグインを読み込む(既定は無効)
+//!   kohaku-studio.exe --list-plugins    ... プラグインの一覧と動作確認だけ行う
 //!   kohaku-studio.exe --make-samples DIR ... サンプルデータ(CSV/SQLite)を生成
 
 mod analysis;
@@ -17,6 +19,7 @@ fn main() {
     let mut port: u16 = 5590;
     let mut open_browser = true;
     let mut use_cache = true;
+    let mut enable_plugins = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -28,6 +31,11 @@ fn main() {
             }
             "--no-browser" => open_browser = false,
             "--no-cache" => use_cache = false,
+            "--enable-plugins" => enable_plugins = true,
+            "--list-plugins" => {
+                list_plugins();
+                return;
+            }
             "--make-samples" => {
                 let dir = args.get(i + 1).cloned().unwrap_or_else(|| ".".to_string());
                 match make_samples(&dir) {
@@ -37,19 +45,48 @@ fn main() {
                 return;
             }
             "--help" | "-h" => {
-                println!(
-                    "kohaku-studio [--port N] [--no-browser] [--no-cache] [--make-samples DIR]"
-                );
+                println!("kohaku-studio [--port N] [--no-browser] [--no-cache]");
+                println!("              [--enable-plugins] [--list-plugins] [--make-samples DIR]");
                 return;
             }
             _ => {}
         }
         i += 1;
     }
-    if let Err(e) = server::run(port, open_browser, use_cache) {
+    if let Err(e) = server::run(port, open_browser, use_cache, enable_plugins) {
         eprintln!("起動エラー: {e}");
         std::process::exit(1);
     }
+}
+
+/// プラグインの一覧表示と動作確認。実際に describe を呼んで
+/// 「置いたのに動かない」を切り分けられるようにする。
+fn list_plugins() {
+    let Some(dir) = bi_connectors::plugin::default_plugin_dir() else {
+        eprintln!("プラグインディレクトリを特定できません");
+        return;
+    };
+    println!("プラグインディレクトリ: {}", dir.display());
+    let (plugins, warnings) = bi_connectors::plugin::discover(&dir);
+    for w in &warnings {
+        println!("  [警告] {w}");
+    }
+    if plugins.is_empty() {
+        println!("  (プラグインはありません)");
+        return;
+    }
+    for p in &plugins {
+        print!("  {} [{}] ... ", p.name(), p.targets().join(" "));
+        match p.describe() {
+            Ok(_) => println!("OK"),
+            Err(e) => println!("NG: {e}"),
+        }
+    }
+    println!();
+    println!("使うには --enable-plugins を付けて起動してください。");
+    println!(
+        "注意: プラグインはあなたの権限で動きます。信頼できる作者のものだけを置いてください。"
+    );
 }
 
 /// 動作確認用のサンプルデータ生成

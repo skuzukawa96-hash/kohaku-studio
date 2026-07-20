@@ -29,10 +29,34 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(use_cache: bool) -> BiResult<AppState> {
+    /// enable_plugins が true のときだけプラグインを読み込む。
+    /// プラグインはユーザーの権限で動く任意コードのため、既定は無効
+    /// (docs/plugin-api-draft.md 7章)。
+    pub fn new(use_cache: bool, enable_plugins: bool) -> BiResult<AppState> {
+        let mut registry = ConnectorRegistry::new();
+        if enable_plugins {
+            match bi_connectors::plugin::default_plugin_dir() {
+                Some(dir) => {
+                    let (loaded, warnings) = registry.load_plugins(&dir);
+                    for w in &warnings {
+                        eprintln!("プラグインを読み込めません: {w}");
+                    }
+                    if loaded.is_empty() {
+                        println!("プラグイン: {} には有効なものがありません", dir.display());
+                    } else {
+                        println!("プラグインを読み込みました({}):", dir.display());
+                        for l in &loaded {
+                            println!("  - {l}");
+                        }
+                        println!("  ※ プラグインはあなたの権限で動きます");
+                    }
+                }
+                None => eprintln!("プラグインディレクトリを特定できません"),
+            }
+        }
         Ok(AppState {
             engine: Engine::new()?,
-            registry: ConnectorRegistry::new(),
+            registry,
             datasets: Vec::new(),
             charts: Vec::new(),
             queries: Vec::new(),
@@ -42,8 +66,8 @@ impl AppState {
     }
 }
 
-pub fn run(port: u16, open_browser: bool, use_cache: bool) -> BiResult<()> {
-    let mut state = AppState::new(use_cache)?;
+pub fn run(port: u16, open_browser: bool, use_cache: bool, enable_plugins: bool) -> BiResult<()> {
+    let mut state = AppState::new(use_cache, enable_plugins)?;
     let mut bound_port = port;
     let server = {
         let mut srv = None;

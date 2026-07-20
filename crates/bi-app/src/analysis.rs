@@ -1276,7 +1276,7 @@ mod tests {
     /// 分析API層の責務(ソート・集約・欠損除外・応答JSONの形)を検証する。
     /// 統計計算そのものの正しさは bi-analytics 側のテストが担当する。
     fn state_with(name: &str, cols: &[(&str, DataType)], rows: Vec<Vec<Value>>) -> AppState {
-        let mut st = AppState::new(false).unwrap();
+        let mut st = AppState::new(false, false).unwrap();
         register(&mut st, name, cols, rows);
         st
     }

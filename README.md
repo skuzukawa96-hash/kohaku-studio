@@ -41,6 +41,8 @@ kohaku-studio                       起動（ブラウザが自動で開く、�
 kohaku-studio --port 8080           ポート指定（使用中なら自動で次を探す）
 kohaku-studio --no-browser          ブラウザを開かない
 kohaku-studio --no-cache            Parquetキャッシュを使わない（常にソースから読み込む）
+kohaku-studio --enable-plugins      プラグインを読み込む（既定は無効）
+kohaku-studio --list-plugins        プラグインの一覧と疎通確認だけ行って終了
 kohaku-studio --make-samples DIR    動作確認用サンプルデータ（CSV / SQLite DB）を生成
 ```
 
@@ -106,6 +108,33 @@ kohaku-studio                            # 起動して ./samples のファイ�
 | CSV | `.csv` `.tsv` `.txt` | UTF-8 / Shift-JIS 自動判別、区切り文字自動推定 |
 | Excel | `.xlsx` `.xlsm` `.xlsb` `.xls` `.ods` | シート選択、ヘッダー行指定、日付シリアル値→ISO文字列、数式は計算済み値 |
 | SQLite | `.db` `.sqlite` `.sqlite3` `.db3` | テーブル/ビュー一覧から選択（読み取り専用で開く） |
+
+上記に加えて、**コネクタプラグイン**で独自形式に対応できます（下記）。
+
+---
+
+## プラグイン（コネクタ）
+
+対応していない形式を扱いたいときは、外部プログラムをコネクタとして追加できます。
+プラグインは標準入出力でJSONをやりとりするだけなので、**言語は自由**です
+（Python / Go / Rust など。本体はどれにも依存しません）。
+
+```powershell
+# サンプル（JSON Lines 対応）を配置して確認する
+Copy-Item -Recurse examples\plugins\jsonl-connector "$env:LOCALAPPDATA\kohaku-studio\plugins\"
+kohaku-studio --list-plugins      # 実際に起動して疎通を確認
+kohaku-studio --enable-plugins    # 有効にして起動
+```
+
+有効にすると、対応する拡張子のファイルが「＋ インポート」に現れ、
+取り込んだ後は他のデータと同じく SQL・チャート・分析で扱えます。
+
+> ⚠️ **プラグインはあなたの権限で動く任意のプログラムです。**
+> そのため既定では無効で、`--enable-plugins` を付けたときだけ読み込みます。
+> 信頼できる作者のものだけを置いてください。
+
+作り方は [examples/plugins/README.md](examples/plugins/README.md)、
+設計の背景は [docs/plugin-api-draft.md](docs/plugin-api-draft.md) を参照してください。
 
 ---
 
