@@ -152,6 +152,7 @@
       <div id="an-profile" class="subpane active">
         <div class="btn-row">
           <button id="btn-an-profile" class="primary">▶ 自動プロファイル実行</button>
+          <label title="選んだ列の値ごとに分けてプロファイルを実行し、結果を並べます">グループ分割 <select id="an-profile-group"></select></label>
           <span class="hint">全列の統計量・相関行列・強い相関のペアを自動算出します</span>
         </div>
         <div id="an-profile-out" class="an-out"></div>
@@ -173,6 +174,7 @@
           <div class="an-check-col">特徴量 <div id="clu-x" class="checklist"></div></div>
           <label>クラスタ数 k <input id="clu-k" type="number" value="3" min="2" max="50"></label>
           <button id="btn-clu-elbow" title="エルボー法でkを自動提案">💡 kを自動提案</button>
+          <label title="選んだ列の値ごとに分けてクラスタリングを実行し、結果を並べます(軸選択・保存は使えません)">グループ分割 <select id="clu-group"></select></label>
           <button id="btn-an-clu" class="primary">▶ クラスタリング実行</button>
         </div>
         <div id="clu-out" class="an-out"></div>

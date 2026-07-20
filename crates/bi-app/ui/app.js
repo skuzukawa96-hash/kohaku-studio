@@ -2104,6 +2104,8 @@ async function anLoadColumns() {
   // グループ分割は任意指定(空欄=分割しない)
   fillCols("ts-group", anColumns, true);
   fillCols("reg-group", anColumns, true);
+  fillCols("an-profile-group", anColumns, true);
+  fillCols("clu-group", anColumns, true);
   renderTestSelects();
   if (!numCols.length) $("an-cols-msg").textContent = "数値列がありません(ソースを選択してください)";
 }
@@ -2397,57 +2399,70 @@ function fmtNum(v, digits) {
 
 async function runProfile() {
   const out = $("an-profile-out");
+  const group = $("an-profile-group").value;
+  const req = { source: anGetSource() };
+  if (group) {
+    await runGrouped("profile", group, req, out, (box, r) => {
+      box.insertAdjacentHTML("beforeend", profileSummaryHtml(r));
+    });
+    return;
+  }
   out.innerHTML = '<div class="hint">分析中...</div>';
   try {
-    const r = await api("/api/analyze/profile", { source: anGetSource() });
-    let html = `<div class="hint">${r.n_rows.toLocaleString()}行${r.truncated ? "(上限で打ち切り)" : ""}</div>`;
-    // 列統計
-    html += "<h4>列статистics</h4>";
-    html += '<div class="table-wrap"><table class="grid"><thead><tr><th>列</th><th>型</th><th>件数</th><th>NULL</th><th>個別値</th><th>平均</th><th>標準偏差</th><th>最小</th><th>25%</th><th>中央値</th><th>75%</th><th>最大</th></tr></thead><tbody>';
-    for (const c of r.columns) {
-      const s = c.stats || {};
-      html += `<tr><td>${esc(c.name)}</td><td>${c.kind === "numeric" ? "数値" : "文字列"}</td>
-        <td class="num">${c.count.toLocaleString()}</td><td class="num">${c.nulls.toLocaleString()}</td>
-        <td class="num">${c.distinct.toLocaleString()}${c.distinct_capped ? "+" : ""}</td>
-        <td class="num">${fmtNum(s.mean)}</td><td class="num">${fmtNum(s.std)}</td>
-        <td class="num">${fmtNum(s.min)}</td><td class="num">${fmtNum(s.q25)}</td>
-        <td class="num">${fmtNum(s.median)}</td><td class="num">${fmtNum(s.q75)}</td>
-        <td class="num">${fmtNum(s.max)}</td></tr>`;
-    }
-    html += "</tbody></table></div>";
-    // 相関行列
-    const corr = r.correlation;
-    if (corr.columns.length >= 2) {
-      html += "<h4>相関行列(ピアソン)</h4>";
-      html += '<div class="table-wrap"><table class="grid corr"><thead><tr><th></th>';
-      for (const c of corr.columns) html += `<th>${esc(c)}</th>`;
-      html += "</tr></thead><tbody>";
-      corr.matrix.forEach((row, i) => {
-        html += `<tr><th>${esc(corr.columns[i])}</th>`;
-        row.forEach((v, j) => {
-          if (i === j) { html += '<td class="diag">1</td>'; return; }
-          if (v === null) { html += "<td>—</td>"; return; }
-          const alpha = Math.min(0.85, Math.abs(v));
-          // 正の相関=データ既定色 / 負の相関=danger。どちらもテーマ変数から取る
-          const bg = rgbaVar(v >= 0 ? "--chart-primary" : "--danger", alpha);
-          html += `<td style="background:${bg}">${fmtNum(v, 2)}</td>`;
-        });
-        html += "</tr>";
-      });
-      html += "</tbody></table></div>";
-    }
-    // 強相関ペア
-    if (r.top_pairs.length) {
-      html += "<h4>相関の強いペア</h4><ul>";
-      for (const p of r.top_pairs.slice(0, 5)) {
-        html += `<li>${esc(p.a)} × ${esc(p.b)} : r = ${fmtNum(p.r, 3)}</li>`;
-      }
-      html += "</ul>";
-    }
-    out.innerHTML = html.replace("列статистics", "列統計");
+    const r = await api("/api/analyze/profile", req);
+    out.innerHTML = profileSummaryHtml(r);
   } catch (e) {
     out.innerHTML = `<div class="hint error">${esc(e.message)}</div>`;
   }
+}
+
+/** プロファイル結果のHTML(単独実行・グループ別実行の共通処理) */
+function profileSummaryHtml(r) {
+  let html = `<div class="hint">${r.n_rows.toLocaleString()}行${r.truncated ? "(上限で打ち切り)" : ""}</div>`;
+  // 列統計
+  html += "<h4>列統計</h4>";
+  html += '<div class="table-wrap"><table class="grid"><thead><tr><th>列</th><th>型</th><th>件数</th><th>NULL</th><th>個別値</th><th>平均</th><th>標準偏差</th><th>最小</th><th>25%</th><th>中央値</th><th>75%</th><th>最大</th></tr></thead><tbody>';
+  for (const c of r.columns) {
+    const s = c.stats || {};
+    html += `<tr><td>${esc(c.name)}</td><td>${c.kind === "numeric" ? "数値" : "文字列"}</td>
+      <td class="num">${c.count.toLocaleString()}</td><td class="num">${c.nulls.toLocaleString()}</td>
+      <td class="num">${c.distinct.toLocaleString()}${c.distinct_capped ? "+" : ""}</td>
+      <td class="num">${fmtNum(s.mean)}</td><td class="num">${fmtNum(s.std)}</td>
+      <td class="num">${fmtNum(s.min)}</td><td class="num">${fmtNum(s.q25)}</td>
+      <td class="num">${fmtNum(s.median)}</td><td class="num">${fmtNum(s.q75)}</td>
+      <td class="num">${fmtNum(s.max)}</td></tr>`;
+  }
+  html += "</tbody></table></div>";
+  // 相関行列
+  const corr = r.correlation;
+  if (corr.columns.length >= 2) {
+    html += "<h4>相関行列(ピアソン)</h4>";
+    html += '<div class="table-wrap"><table class="grid corr"><thead><tr><th></th>';
+    for (const c of corr.columns) html += `<th>${esc(c)}</th>`;
+    html += "</tr></thead><tbody>";
+    corr.matrix.forEach((row, i) => {
+      html += `<tr><th>${esc(corr.columns[i])}</th>`;
+      row.forEach((v, j) => {
+        if (i === j) { html += '<td class="diag">1</td>'; return; }
+        if (v === null) { html += "<td>—</td>"; return; }
+        const alpha = Math.min(0.85, Math.abs(v));
+        // 正の相関=データ既定色 / 負の相関=danger。どちらもテーマ変数から取る
+        const bg = rgbaVar(v >= 0 ? "--chart-primary" : "--danger", alpha);
+        html += `<td style="background:${bg}">${fmtNum(v, 2)}</td>`;
+      });
+      html += "</tr>";
+    });
+    html += "</tbody></table></div>";
+  }
+  // 強相関ペア
+  if (r.top_pairs.length) {
+    html += "<h4>相関の強いペア</h4><ul>";
+    for (const p of r.top_pairs.slice(0, 5)) {
+      html += `<li>${esc(p.a)} × ${esc(p.b)} : r = ${fmtNum(p.r, 3)}</li>`;
+    }
+    html += "</ul>";
+  }
+  return html;
 }
 
 // --- グループ別実行(v0.7) ---
@@ -2573,26 +2588,26 @@ async function runCluster(saveAs) {
   const k = parseInt($("clu-k").value, 10) || 3;
   const req = { source: anGetSource(), features, k };
   if (saveAs) req.save_as = saveAs;
+  const group = $("clu-group").value;
+  if (group && !saveAs) {
+    // グループ別実行では軸の選択・結果の保存は使えない(パネルごとに
+    // 別の結果になるため)。散布図は先頭2特徴量で描く
+    $("clu-axes-row").classList.add("hidden");
+    $("clu-canvas").classList.add("hidden");
+    await runGrouped("cluster", group, req, out, (box, r) => {
+      box.insertAdjacentHTML("beforeend", clusterSummaryHtml(r));
+      if (r.features.length > 1) {
+        drawClusterScatterInto(anGroupCanvas(box), r, 0, 1);
+      }
+    });
+    return;
+  }
   if (!saveAs) out.innerHTML = '<div class="hint">分析中...</div>';
   try {
     const r = await api("/api/analyze/cluster", req);
     lastCluster = r;
     lastClusterReq = { source: req.source, features, k };
-    let html = metricHtml([
-      ["クラスタ数", r.k],
-      ["使用行数", r.n_used.toLocaleString() + (r.dropped ? `(欠損除外 ${r.dropped})` : "")],
-      ["慣性(小さいほど凝集)", fmtNum(r.inertia, 1)],
-      ["反復回数", r.iterations],
-    ]);
-    html += '<div class="table-wrap"><table class="grid"><thead><tr><th>クラスタ</th><th>件数</th>';
-    for (const f of r.features) html += `<th>${esc(f)} (中心)</th>`;
-    html += "</tr></thead><tbody>";
-    r.sizes.forEach((sz, c) => {
-      html += `<tr><td><span style="color:${CLUSTER_COLORS[c % CLUSTER_COLORS.length]}">■</span> ${c}</td><td class="num">${sz.toLocaleString()}</td>`;
-      r.centroids[c].forEach((v) => (html += `<td class="num">${fmtNum(v, 3)}</td>`));
-      html += "</tr>";
-    });
-    html += "</tbody></table></div>";
+    let html = clusterSummaryHtml(r);
     if (r.saved) {
       html += `<div class="hint">データセット「${esc(r.saved.name)}」として保存しました(${r.saved.rows.toLocaleString()}行、cluster列付き)</div>`;
       await refreshState();
@@ -2714,17 +2729,44 @@ function drawElbowChart(canvas, r) {
   ctx.textAlign = "left";
 }
 
+/** クラスタリング結果の要約HTML(単独実行・グループ別実行の共通処理) */
+function clusterSummaryHtml(r) {
+  let html = metricHtml([
+    ["クラスタ数", r.k],
+    ["使用行数", r.n_used.toLocaleString() + (r.dropped ? `(欠損除外 ${r.dropped})` : "")],
+    ["慣性(小さいほど凝集)", fmtNum(r.inertia, 1)],
+    ["反復回数", r.iterations],
+  ]);
+  html += '<div class="table-wrap"><table class="grid"><thead><tr><th>クラスタ</th><th>件数</th>';
+  for (const f of r.features) html += `<th>${esc(f)} (中心)</th>`;
+  html += "</tr></thead><tbody>";
+  r.sizes.forEach((sz, c) => {
+    html += `<tr><td><span style="color:${CLUSTER_COLORS[c % CLUSTER_COLORS.length]}">■</span> ${c}</td><td class="num">${sz.toLocaleString()}</td>`;
+    r.centroids[c].forEach((v) => (html += `<td class="num">${fmtNum(v, 3)}</td>`));
+    html += "</tr>";
+  });
+  html += "</tbody></table></div>";
+  return html;
+}
+
 function drawClusterScatter() {
   if (!lastCluster) return;
-  const xi = parseInt($("clu-ax").value, 10) || 0;
-  const yi = parseInt($("clu-ay").value, 10) || 0;
-  const canvas = $("clu-canvas");
+  drawClusterScatterInto(
+    $("clu-canvas"),
+    lastCluster,
+    parseInt($("clu-ax").value, 10) || 0,
+    parseInt($("clu-ay").value, 10) || 0,
+  );
+}
+
+/** クラスタ散布図を指定のCanvasに描く(グループ別実行ではパネルごとに呼ぶ) */
+function drawClusterScatterInto(canvas, r, xi, yi) {
   canvas.classList.remove("hidden");
-  const nf = lastCluster.features.length;
-  const pts = lastCluster.points.map((p) => ({ x: p[xi], y: p[yi], c: p[nf] }));
+  const nf = r.features.length;
+  const pts = r.points.map((p) => ({ x: p[xi], y: p[yi], c: p[nf] }));
   drawAnScatter(canvas, pts, {
-    xlab: lastCluster.features[xi],
-    ylab: lastCluster.features[yi],
+    xlab: r.features[xi],
+    ylab: r.features[yi],
     colored: true,
   });
 }
