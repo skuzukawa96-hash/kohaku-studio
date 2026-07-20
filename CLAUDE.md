@@ -79,6 +79,8 @@ bi-app        HTTPサーバー(tiny_http) / SQLite in-memoryクエリエンジ�
   - `form` で使うフォーム行を宣言する（`{x, y, value, series, agg, yrange, facet, facetMax}`。文字列を渡すとラベルを差し替え）。`facet: true` で本体のファセット分割に乗る（`buildQuery` はファセット列を `f` で返し、`render` は第7引数 `shared = {facetValue, allRows}` を受け取ってスケールを全パネルで共有する。実装例はウェハーマップ）。**凡例・カラースケールは `renderLegend()` + `legendWidth` で宣言し、本体に格子の外側へ描かせる**（パネル内に描くとそのパネルだけ余白が変わり、大きさと位置が揃わなくなる）。
   - **軸のレンジは `niceTicks()`（自動。データ範囲を必ず覆う）→ `H.applyManualRange(spec, ticks, count)`（手動指定を重ねる）の順で求め、データの描画は必ずプロット領域でクリップする**。この3点を守らないとプロットが枠外に出て軸ラベルと重なる。範囲外に出る注釈線（管理限界など）は描画せず、その旨を画面に明示すること。
   - **`fetch` チャート（SPC管理図）のファセット**は結果を `f` 列で分割できないため、`fetch` 自身が `/api/analyze/group` を呼んで `{group, groups: [{value, result|error}]}` を返す。本体は `groups` があればそれをパネル列として描く（`renderRegistryFacets`）。パネル間のスケール共有は `shared.allResults` から求める。
+  - **Canvasの文字状態は描く直前に必ず設定する**（`textAlign` / `textBaseline`）。ファセットは見出しを描いた同じ ctx を各パネルに渡すため、前の設定が残っていると文字が枠外へずれる（v0.7 で SPC の情報行が下段の見出しと重なった）。本体側は `resetTextState()` で既定に戻してから `render` を呼ぶ。
+  - **ファセットの格子は外周の余白（`FACET_PAD`）と段の間隔（`FACET_ROW_GAP`）を引いてからパネル高さを決める**。これがないと最上段・最下段の文字がCanvas端で切れ、段の境目でも文字が接触する。
   - 組み込みチャートの描画は `renderChart`（入口）→ `renderFacets`（ファセット分割）→ `drawChartArea`（1枚を描く）の3層。ファセット間では **Y軸レンジ・ヒストグラムのビン・系列の色順を必ず共有する**（`shared` 引数）。揃えないとパネル同士を見比べられない。
 
 ## 開発フロー
