@@ -181,6 +181,13 @@ kohaku.registerChartType({
 
 - `helpers` に `niceTicks` / `fmtTick` / `CHART_COLORS` 等の既存ユーティリティを渡し、見た目の統一を保つ
 - **v0.4 実装で得た知見**: SQLだけでは表現できないチャート(SPC管理図の管理限界・ネルソンルール判定など)のため、`buildQuery` の代わりに非同期の `fetch(spec, base)` フック(本体の分析APIを呼んで結果オブジェクトを返す)を許可する。統計処理をUI側に書かない(設計Rule 1)ための仕組みで、SPC管理図が最初の利用者
+- **v0.5 実装で得た知見(ファセット対応)**: `form` に `facet: true` を宣言すると、本体がファセット分割
+  (spec.facet の列値ごとのパネル並列表示)を引き受ける。`facetMax` でパネル数の上限を指定できる
+  (既定12。ウェハーマップは25=1ロット分)。ファセット時、`render` は7番目の引数
+  `shared = { facetValue, allRows, primary }` を受け取る — `allRows` は全パネル分の行
+  (スケールをパネル間で共有するための基準。ウェハーマップは座標範囲とカラースケールをここから計算)、
+  `primary` は先頭パネルのみ true(凡例やカラーバーなど1個だけ描くものの制御用)。
+  `buildQuery` はファセット列を `f` として SELECT に含める(本体の分割処理は `f` 列を見る)
 - サーバーは `--enable-plugins` 時のみ `/plugins/<name>/chart.js` を配信し、`index.html` 読み込み後にUIが順次ロードする
 - ChartSpec(保存形式)は変更不要。`chart_type` にプラグインの識別子が入るだけ(Rule 3 を維持)
 - プラグイン未導入環境でそのプロジェクトを開いた場合は「未対応のチャートタイプ(プラグイン `wafermap` が必要)」と表示する(壊さない・原因を示す)

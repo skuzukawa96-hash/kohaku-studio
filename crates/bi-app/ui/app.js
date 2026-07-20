@@ -797,6 +797,12 @@ function renderChart(canvas, spec, result) {
   const { ctx, w, h } = setupCanvas(canvas);
   const reg = CHART_REGISTRY.get(spec.chart_type);
   if (reg) {
+    // form.facet を宣言した登録チャートはファセット分割に乗せる(ウェハーマップ等)
+    const fciReg = result.columns.indexOf("f");
+    if (spec.facet && fciReg >= 0 && reg.form && reg.form.facet) {
+      renderFacets(ctx, w, h, spec, result, fciReg, reg);
+      return;
+    }
     reg.render(ctx, w, h, spec, result, CHART_HELPERS);
     return;
   }
@@ -810,7 +816,7 @@ function renderChart(canvas, spec, result) {
   // ファセット分割(f列があれば、値ごとに小さなチャートを格子状に描く)
   const fci = result.columns.indexOf("f");
   if (spec.facet && fci >= 0) {
-    renderFacets(ctx, w, h, spec, result, fci);
+    renderFacets(ctx, w, h, spec, result, fci, null);
     return;
   }
   drawChartArea(ctx, w, h, spec, result, null, null);
@@ -820,8 +826,9 @@ function renderChart(canvas, spec, result) {
  *  同じCanvas内に小さなチャートを格子状に描く。
  *  Y軸レンジ・ヒストグラムのビン・系列の色はセル間で共有する
  *  (揃えないとパネル同士を見比べられないため)。 */
-function renderFacets(ctx, w, h, spec, result, fi) {
-  const MAX_FACETS = 12;
+function renderFacets(ctx, w, h, spec, result, fi, reg) {
+  // 登録チャートは facetMax で上限を広げられる(ウェハーマップは25枚=1ロット分)
+  const MAX_FACETS = (reg && reg.form && reg.form.facetMax) || 12;
   const names = [];
   const byFacet = new Map();
   for (const r of result.rows) {
@@ -848,7 +855,7 @@ function renderFacets(ctx, w, h, spec, result, fi) {
   const shared = {};
   // 系列の色と凡例の並びをセル間で固定する
   // (セルごとに出現順で色を割ると、同じ系列が別の色になってしまう)
-  const si = result.columns.indexOf("s");
+  const si = reg ? -1 : result.columns.indexOf("s");
   if (si >= 0) {
     const order = [];
     for (const r of result.rows) {
@@ -864,7 +871,9 @@ function renderFacets(ctx, w, h, spec, result, fi) {
   // Y軸レンジの共有(ユーザーが手動指定していないときだけ)
   const specShared = { ...spec };
   const xi = result.columns.indexOf("x");
-  if (spec.chart_type === "histogram") {
+  if (reg) {
+    // 登録チャートのスケール共有は render 側が shared.allRows から行う
+  } else if (spec.chart_type === "histogram") {
     const vals = result.rows.map((r) => Number(r[xi])).filter((v) => isFinite(v));
     if (vals.length) {
       const lo = Math.min(...vals);
@@ -917,7 +926,7 @@ function renderFacets(ctx, w, h, spec, result, fi) {
 
   // 格子レイアウト(件数から列数を決める)
   const n = shown.length;
-  const cols = n <= 2 ? n : n <= 4 ? 2 : n <= 9 ? 3 : 4;
+  const cols = n <= 2 ? n : n <= 4 ? 2 : n <= 9 ? 3 : n <= 16 ? 4 : 5;
   const gridRows = Math.ceil(n / cols);
   const cw = w / cols;
   const chh = h / gridRows;
@@ -927,15 +936,26 @@ function renderFacets(ctx, w, h, spec, result, fi) {
     ctx.beginPath();
     ctx.rect(0, 0, cw, chh);
     ctx.clip();
-    drawChartArea(
-      ctx,
-      cw,
-      chh,
-      specShared,
-      { columns: result.columns, rows: byFacet.get(name) },
-      name,
-      shared
-    );
+    const cellResult = { columns: result.columns, rows: byFacet.get(name) };
+    if (reg) {
+      // 登録チャート: ファセット名を上部に描き、残りの領域を render に渡す。
+      // shared.allRows で全ファセットの行を渡し、スケールの共有は render 側が行う。
+      // shared.primary はカラースケール等を代表セルだけに描くための目印
+      const TITLE_H = 16;
+      ctx.fillStyle = CHART_COLORS.text;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      const tl = name.length > 24 ? name.slice(0, 24) + "…" : name;
+      ctx.fillText(tl, cw / 2, 2);
+      ctx.translate(0, TITLE_H);
+      reg.render(ctx, cw, chh - TITLE_H, specShared, cellResult, CHART_HELPERS, {
+        facetValue: name,
+        allRows: result.rows,
+        primary: i === 0,
+      });
+    } else {
+      drawChartArea(ctx, cw, chh, specShared, cellResult, name, shared);
+    }
     ctx.restore();
   });
   if (notes.length) {
@@ -1346,7 +1366,7 @@ const CHART_HELPERS = {
 kohaku.registerChartType({
   type: "wafermap",
   label: "ウェハーマップ",
-  form: { x: "X座標(ダイ)", y: "Y座標(ダイ)", value: "値(歩留まり等)", agg: true },
+  form: { x: "X座標(ダイ)", y: "Y座標(ダイ)", value: "値(歩留まり等)", agg: true, facet: true, facetMax: 25 },
   buildQuery(spec, base) {
     if (!spec.value && spec.agg !== "count") {
       throw new Error("値の列を指定してください(件数を数える場合は集計=件数)");
@@ -1356,28 +1376,36 @@ kohaku.registerChartType({
     // ウェハーマップは常にダイ単位へ集計する(「なし」は平均として扱う)
     const aggName = !spec.agg || spec.agg === "none" ? "avg" : spec.agg;
     const agg = aggName === "count" ? "COUNT(*)" : `${aggName.toUpperCase()}(${qi(spec.value)})`;
-    return `SELECT ${x} AS x, ${y} AS y, ${agg} AS v FROM (${base}) WHERE ${x} IS NOT NULL AND ${y} IS NOT NULL GROUP BY ${x}, ${y} LIMIT 100000`;
+    const f = spec.facet ? `, ${qi(spec.facet)} AS f` : "";
+    const grp = spec.facet ? `${x}, ${y}, ${qi(spec.facet)}` : `${x}, ${y}`;
+    return `SELECT ${x} AS x, ${y} AS y, ${agg} AS v${f} FROM (${base}) WHERE ${x} IS NOT NULL AND ${y} IS NOT NULL GROUP BY ${grp} LIMIT 100000`;
   },
-  render(ctx, w, h, spec, result, H) {
+  render(ctx, w, h, spec, result, H, shared) {
     const xi = result.columns.indexOf("x");
     const yi = result.columns.indexOf("y");
     const vi = result.columns.indexOf("v");
-    const dies = result.rows.filter((r) => r[xi] !== null && r[yi] !== null && r[vi] !== null);
+    const valid = (rows) => rows.filter((r) => r[xi] !== null && r[yi] !== null && r[vi] !== null);
+    const dies = valid(result.rows);
     if (!dies.length) {
       ctx.fillStyle = H.colors.text;
       ctx.fillText("データがありません", 16, 24);
       return;
     }
-    const xs = dies.map((r) => r[xi]);
-    const ys = dies.map((r) => r[yi]);
-    const vs = dies.map((r) => r[vi]);
+    // ファセット時は座標範囲とカラースケールを全ウェハーで共有する
+    // (揃えないと同じ値が別の色になり、ウェハー同士を比較できない)
+    const basis = shared && shared.allRows ? valid(shared.allRows) : dies;
+    const xs = basis.map((r) => r[xi]);
+    const ys = basis.map((r) => r[yi]);
+    const vs = basis.map((r) => r[vi]);
     const xMin = Math.min(...xs), xMax = Math.max(...xs);
     const yMin = Math.min(...ys), yMax = Math.max(...ys);
     let vMin = Math.min(...vs), vMax = Math.max(...vs);
     if (vMin === vMax) { vMin -= 1; vMax += 1; }
 
+    // カラースケールは代表セル(先頭)だけに描く(全セル共通のため)
+    const showScale = !shared || shared.primary;
     // 正方形セルでプロット領域(右にカラースケール分を確保)に収める
-    const m = { l: 16, r: 80, t: 12, b: 28 };
+    const m = { l: 16, r: showScale ? 80 : 16, t: 12, b: 28 };
     const nx = xMax - xMin + 1;
     const ny = yMax - yMin + 1;
     const cell = Math.max(2, Math.min((w - m.l - m.r) / nx, (h - m.t - m.b) / ny));
@@ -1409,18 +1437,22 @@ kohaku.registerChartType({
     ctx.stroke();
     ctx.lineWidth = 1;
 
-    // カラースケール(右端の縦バー)
-    const sx = w - m.r + 28;
-    const sy = m.t + 10;
-    const sh = h - m.t - m.b - 20;
-    for (let i = 0; i < sh; i++) {
-      ctx.fillStyle = colorOf(vMax - ((vMax - vMin) * i) / sh);
-      ctx.fillRect(sx, sy + i, 14, 1);
+    if (showScale) {
+      // カラースケール(右端の縦バー)。ファセット時は代表セルのみ
+      const sx = w - m.r + 28;
+      const sy = m.t + 10;
+      const sh = h - m.t - m.b - 20;
+      for (let i = 0; i < sh; i++) {
+        ctx.fillStyle = colorOf(vMax - ((vMax - vMin) * i) / sh);
+        ctx.fillRect(sx, sy + i, 14, 1);
+      }
+      ctx.fillStyle = H.colors.text;
+      ctx.textAlign = "left";
+      ctx.fillText(H.fmtTick(vMax), sx + 18, sy + 8);
+      ctx.fillText(H.fmtTick(vMin), sx + 18, sy + sh);
     }
     ctx.fillStyle = H.colors.text;
     ctx.textAlign = "left";
-    ctx.fillText(H.fmtTick(vMax), sx + 18, sy + 8);
-    ctx.fillText(H.fmtTick(vMin), sx + 18, sy + sh);
     ctx.fillText(`ダイ数: ${dies.length}`, m.l, h - 8);
   },
 });

@@ -117,21 +117,64 @@ fn make_samples(dir: &str) -> Result<(), String> {
     let csv_path = format!("{dir}/sample_sales.csv");
     std::fs::write(&csv_path, csv).map_err(|e| e.to_string())?;
 
-    // CSV: ウェハーマップ用(ダイ座標と歩留まり)。中心ほど高く外周で低下する
-    // 同心円分布に、(5,-3)付近の局所不良クラスタを混ぜる
-    let mut wafer = String::from("die_x,die_y,yield\n");
-    for die_y in -12i64..=12 {
-        for die_x in -12i64..=12 {
-            let r2 = (die_x * die_x + die_y * die_y) as f64;
-            if r2.sqrt() > 11.5 {
-                continue; // ウェハー円の外
+    // CSV: ウェハーマップ用(6枚のウェハー × ダイ座標と歩留まり)。
+    // 各ウェハーに異なる不良パターンを持たせ、ファセット表示(ウェハー別の
+    // 一括確認)のデモに使えるようにする。
+    // 乱数はこのセクション専用のシード列を使う(生成コードの変更が
+    // 他のサンプルの値へ波及しないように独立させる)
+    let mut wseed: u64 = 7;
+    let mut wrand = || {
+        wseed = wseed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (wseed >> 33) as f64 / (u32::MAX as f64) * 2.0
+    };
+    let mut wafer = String::from("wafer_id,die_x,die_y,yield\n");
+    for wi in 1..=6u32 {
+        for die_y in -12i64..=12 {
+            for die_x in -12i64..=12 {
+                let r2 = (die_x * die_x + die_y * die_y) as f64;
+                if r2.sqrt() > 11.5 {
+                    continue; // ウェハー円の外
+                }
+                // 共通: 中心ほど高く外周で低下する同心円分布
+                let mut y = 99.0 - r2 * 0.04 + (wrand() - 1.0) * 1.5;
+                match wi {
+                    1 => {
+                        // 標準: (5,-3)付近に局所不良クラスタ
+                        let (dx, dy) = (die_x - 5, die_y + 3);
+                        if dx * dx + dy * dy <= 4 {
+                            y -= 18.0;
+                        }
+                    }
+                    2 => {
+                        // クラスタ位置違い: (-4,4)付近
+                        let (dx, dy) = (die_x + 4, die_y - 4);
+                        if dx * dx + dy * dy <= 4 {
+                            y -= 18.0;
+                        }
+                    }
+                    3 => {
+                        // エッジリング劣化: 外周が広く低下
+                        if r2.sqrt() > 9.0 {
+                            y -= 12.0;
+                        }
+                    }
+                    5 => {
+                        // 左右勾配(装置の偏りを模す)
+                        y -= die_x as f64 * 0.6;
+                    }
+                    6 => {
+                        // 全体的に低い(プロセス不調ロット)
+                        y -= 6.0;
+                    }
+                    _ => {} // 4: クラスタなしの良品ウェハー
+                }
+                wafer.push_str(&format!(
+                    "W{wi:02},{die_x},{die_y},{:.2}\n",
+                    y.clamp(0.0, 100.0)
+                ));
             }
-            let mut y = 99.0 - r2 * 0.04 + (rand() - 1.0) * 1.5;
-            let (dx, dy) = (die_x - 5, die_y + 3);
-            if dx * dx + dy * dy <= 4 {
-                y -= 18.0; // 局所不良クラスタ
-            }
-            wafer.push_str(&format!("{die_x},{die_y},{:.2}\n", y.clamp(0.0, 100.0)));
         }
     }
     let wafer_path = format!("{dir}/sample_wafer.csv");
