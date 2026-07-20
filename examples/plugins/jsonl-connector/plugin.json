@@ -1,0 +1,10 @@
+{
+  "api_version": 1,
+  "name": "jsonl-connector",
+  "version": "0.1.0",
+  "kind": "connector",
+  "description": "JSON Lines (.jsonl / .ndjson) を読み込むサンプルプラグイン",
+  "entry": ["python", "main.py"],
+  "extensions": ["jsonl", "ndjson"],
+  "schemes": []
+}
