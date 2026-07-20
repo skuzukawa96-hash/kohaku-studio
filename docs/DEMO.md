@@ -13,7 +13,7 @@ kohaku-studio --make-samples ./samples
 | ファイル | 内容 |
 | --- | --- |
 | `sample_sales.csv` | 地域 × 製品の売上（90日分・1,080行）。列: date, region, product, units, unit_price |
-| `sample_wafer.csv` | ウェハーマップ用のダイ座標データ（421ダイ）。列: die_x, die_y, yield。同心円状の歩留まり分布と局所不良クラスタ入り |
+| `sample_wafer.csv` | ウェハーマップ用のダイ座標データ（6枚 × 421ダイ）。列: wafer_id, die_x, die_y, yield。ウェハーごとに不良パターンが異なる（局所クラスタ2種 / エッジリング劣化 / 良品 / 左右勾配 / 全体低下） |
 | `sample_fab.db` | 半導体工場を模したSQLite。`tools`（装置マスタ）と `measurements`（ロット × 装置の歩留まり・欠陥数） |
 
 ## デモの流れ
@@ -38,8 +38,10 @@ kohaku-studio --make-samples ./samples
 4. **チャート化** — 「結果からチャート作成」→ 棒グラフ（X: region / Y: revenue / 集計: 合計）
 
 5. **ウェハーマップ** — `samples/sample_wafer.csv` をインポート → チャートタブでタイプ「ウェハーマップ」、
-   X座標 `die_x` / Y座標 `die_y` / 値 `yield` → プレビュー。
-   中心が高く外周で下がる歩留まり分布と、右下の局所不良クラスタ（赤）が浮かび上がる
+   X座標 `die_x` / Y座標 `die_y` / 値 `yield` / 分割 `wafer_id` → プレビュー。
+   6枚のウェハーがグリッド表示され、局所不良クラスタ・エッジリング劣化・全体低下などの
+   不良パターンの違いを一括で見比べられる（カラースケールは全ウェハー共通）。
+   分割を空にすると全ウェハー平均の1枚合成マップになる
 
 6. **DBもインポート** — `samples/sample_fab.db` → `measurements` テーブルを取り込み
 
