@@ -840,6 +840,19 @@ function renderChart(canvas, spec, result) {
 
 /** ファセットの各パネル上部に確保するタイトル帯の高さ */
 const FACET_TITLE_H = 16;
+/** 格子の外周に確保する余白(Canvas端で文字が切れないように) */
+const FACET_PAD = 4;
+/** 段の間隔(上段の最下部の文字と下段の見出しが接触しないように) */
+const FACET_ROW_GAP = 8;
+
+/** 登録チャートの render に渡す前に、文字の描画状態を既定へ戻す。
+ *  ファセットの見出しを描いた状態(textBaseline="top" 等)が残っていると、
+ *  基準線を自分で設定していないチャートの文字が下へずれて枠外に出る
+ *  (SPC管理図で実際に発生。情報行が下段の見出しと重なり、最下段は見切れた)。 */
+function resetTextState(ctx) {
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+}
 
 /** ファセット表示(seabornのFacetGrid相当)。指定列の値ごとにデータを分け、
  *  同じCanvas内に小さなチャートを格子状に描く。
@@ -960,10 +973,11 @@ function renderFacets(ctx, w, h, spec, result, fi, reg) {
   const cols = facetCols(n);
   const gridRows = Math.ceil(n / cols);
   const cw = w / cols;
-  const chh = h / gridRows;
+  // 登録チャートと同じく、外周の余白と段の間隔を引いてから高さを決める
+  const chh = (h - FACET_PAD * 2 - FACET_ROW_GAP * (gridRows - 1)) / gridRows;
   shown.forEach((name, i) => {
     ctx.save();
-    ctx.translate((i % cols) * cw, Math.floor(i / cols) * chh);
+    ctx.translate((i % cols) * cw, FACET_PAD + Math.floor(i / cols) * (chh + FACET_ROW_GAP));
     ctx.beginPath();
     ctx.rect(0, 0, cw, chh);
     ctx.clip();
@@ -1000,17 +1014,19 @@ function renderRegistryFacets(ctx, w, h, spec, reg, panels, shared, notes) {
   const legendW = reg.renderLegend && shared.legendResult ? reg.legendWidth || 76 : 0;
   const gw = w - legendW;
   const cw = gw / cols;
-  const chh = h / gridRows;
+  // 外周の余白と段の間隔を先に引いてからパネル高さを決める。これがないと
+  // 最上段の見出しと最下段の情報行がCanvas端で切れ、段の境目でも文字が接触する
+  const chh = (h - FACET_PAD * 2 - FACET_ROW_GAP * (gridRows - 1)) / gridRows;
   panels.forEach((p, i) => {
     ctx.save();
-    ctx.translate((i % cols) * cw, Math.floor(i / cols) * chh);
+    ctx.translate((i % cols) * cw, FACET_PAD + Math.floor(i / cols) * (chh + FACET_ROW_GAP));
     ctx.beginPath();
     ctx.rect(0, 0, cw, chh);
     ctx.clip();
     ctx.fillStyle = CHART_COLORS.text;
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    ctx.fillText(p.name.length > 24 ? p.name.slice(0, 24) + "…" : p.name, cw / 2, 2);
+    ctx.fillText(p.name.length > 24 ? p.name.slice(0, 24) + "…" : p.name, cw / 2, 0);
     ctx.translate(0, FACET_TITLE_H);
     if (p.error) {
       // 1パネルの失敗で他を消さない(サーバー側も止めずに返している)
@@ -1019,6 +1035,7 @@ function renderRegistryFacets(ctx, w, h, spec, reg, panels, shared, notes) {
       ctx.textBaseline = "middle";
       wrapText(ctx, p.error, cw / 2, (chh - FACET_TITLE_H) / 2, cw - 16, 14);
     } else {
+      resetTextState(ctx);
       reg.render(ctx, cw, chh - FACET_TITLE_H, spec, p.result, CHART_HELPERS, {
         facetValue: p.name,
         ...shared,
@@ -1029,7 +1046,8 @@ function renderRegistryFacets(ctx, w, h, spec, reg, panels, shared, notes) {
   if (legendW) {
     // 凡例は最上段の右端パネルの右隣(格子の外側)に置く
     ctx.save();
-    ctx.translate(gw, FACET_TITLE_H);
+    ctx.translate(gw, FACET_PAD + FACET_TITLE_H);
+    resetTextState(ctx);
     reg.renderLegend(ctx, legendW, chh - FACET_TITLE_H, spec, shared.legendResult, CHART_HELPERS);
     ctx.restore();
   }
