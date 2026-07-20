@@ -577,12 +577,22 @@ pub fn api_group(state: &mut AppState, req: &Json) -> BiResult<Json> {
         "timeseries" => api_timeseries,
         "regression" => api_regression,
         "spc" => api_spc,
+        "profile" => api_profile,
+        "cluster" => api_cluster,
         _ => {
             return Err(format!(
                 "グループ別実行に対応していない分析です: {analysis}"
             ))
         }
     };
+    // クラスタリングの save_as はグループ全体で同じ名前に保存してしまい、
+    // 最後のグループだけが残る(前のグループを黙って上書きする)ため禁じる
+    if !s(req, "save_as").trim().is_empty() {
+        return Err(
+            "グループ別実行では結果の保存はできません(保存はグループを絞ってから実行してください)"
+                .to_string(),
+        );
+    }
 
     let base = source_sql(req)?;
     let ident = format!("\"{}\"", group.replace('"', "\"\""));
@@ -1865,11 +1875,19 @@ mod tests {
     fn test_group_errors() {
         let mut st = group_spc_state();
         let req = |a: &str, g: &str| json!({"analysis": a, "group": g, "source": ds("g"), "x": "lot", "value": "v"});
-        // 未対応の分析
-        let e = api_group(&mut st, &req("cluster", "tool")).unwrap_err();
+        // 未対応の分析(エルボー法はkの提案なのでグループ別に並べる意味が薄い)
+        let e = api_group(&mut st, &req("elbow", "tool")).unwrap_err();
         assert!(e.contains("対応していない"), "{e}");
         // グループ列の未指定
         assert!(api_group(&mut st, &req("spc", "")).is_err());
+        // クラスタリングの結果保存はグループ別実行では禁止(同名に上書きされるため)
+        let e = api_group(
+            &mut st,
+            &json!({"analysis": "cluster", "group": "tool", "source": ds("g"),
+                    "features": ["v"], "k": 2, "save_as": "out"}),
+        )
+        .unwrap_err();
+        assert!(e.contains("保存はできません"), "{e}");
         // 値が1つもない列(全行NULLに相当する空の絞り込み)
         let e = api_group(
             &mut st,
