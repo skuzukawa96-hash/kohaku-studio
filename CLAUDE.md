@@ -76,7 +76,7 @@ bi-app        HTTPサーバー(tiny_http) / SQLite in-memoryクエリエンジ�
 - **新しいデータソース**: `bi_core::Connector` trait を実装し、`bi-connectors/src/lib.rs` の `ConnectorRegistry::new()` に登録するだけ。UI・エンジン側の変更は不要（ファイルは拡張子、接続URLはスキームで解決される）。
 - **コネクタプラグイン（再ビルド不要の拡張）**: `bi-connectors/src/plugin.rs`。`%LOCALAPPDATA%\kohaku-studio\plugins\<name>\plugin.json` を読み、外部プロセスと stdin/stdout のJSON 1往復で通信する（`--enable-plugins` 時のみ有効。既定は無効=任意コード実行のため）。**入出力はUTF-8固定**（Windowsのロケール依存出力で壊れるため、非UTF-8は専用エラーにしている）。診断は `--list-plugins`。サンプルは `examples/plugins/`。
 - **新しいチャートタイプ**: `bi-app/ui/app.js` の `kohaku.registerChartType()` で登録する（`docs/plugin-api-draft.md` 6章と同一のAPI。実装例はウェハーマップ）。既存5種（棒/折れ線/散布図/ヒストグラム/テーブル）のみ従来どおり `buildChartQuery()` / `renderChart()` 内の分岐。
-  - `form` で使うフォーム行を宣言する（`{x, y, value, series, agg, yrange, facet, facetMax}`。文字列を渡すとラベルを差し替え）。`facet: true` で本体のファセット分割に乗る（`buildQuery` はファセット列を `f` で返し、`render` は第7引数 `shared = {facetValue, allRows, primary}` を受け取ってスケールを全パネルで共有する。実装例はウェハーマップ）。
+  - `form` で使うフォーム行を宣言する（`{x, y, value, series, agg, yrange, facet, facetMax}`。文字列を渡すとラベルを差し替え）。`facet: true` で本体のファセット分割に乗る（`buildQuery` はファセット列を `f` で返し、`render` は第7引数 `shared = {facetValue, allRows}` を受け取ってスケールを全パネルで共有する。実装例はウェハーマップ）。**凡例・カラースケールは `renderLegend()` + `legendWidth` で宣言し、本体に格子の外側へ描かせる**（パネル内に描くとそのパネルだけ余白が変わり、大きさと位置が揃わなくなる）。
   - **軸のレンジは `niceTicks()`（自動。データ範囲を必ず覆う）→ `H.applyManualRange(spec, ticks, count)`（手動指定を重ねる）の順で求め、データの描画は必ずプロット領域でクリップする**。この3点を守らないとプロットが枠外に出て軸ラベルと重なる。範囲外に出る注釈線（管理限界など）は描画せず、その旨を画面に明示すること。
   - 組み込みチャートの描画は `renderChart`（入口）→ `renderFacets`（ファセット分割）→ `drawChartArea`（1枚を描く）の3層。ファセット間では **Y軸レンジ・ヒストグラムのビン・系列の色順を必ず共有する**（`shared` 引数）。揃えないとパネル同士を見比べられない。
 
