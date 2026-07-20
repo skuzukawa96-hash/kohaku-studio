@@ -152,73 +152,114 @@ fn round4(x: f64) -> Json {
 
 // ---------- データプロファイル ----------
 
-pub fn api_profile(state: &mut AppState, req: &Json) -> BiResult<Json> {
-    let result = resolve_source(state, req)?;
-    let ncols = result.columns.len();
+/// 1列ぶんの統計を求める。数値列なら相関に使う f64 配列も返す
+/// (呼び出し側が MAX_CORR_COLS の範囲だけ保持し、残りは捨てる)。
+fn profile_column(result: &QueryResult, idx: usize, name: &str) -> (Json, Option<Vec<f64>>) {
     let nrows = result.rows.len();
-    if ncols == 0 {
-        return Err("結果に列がありません".to_string());
-    }
-
-    let mut columns_out = Vec::with_capacity(ncols);
-    let mut numeric_cols: Vec<(usize, Vec<f64>)> = Vec::new();
-
-    for c in 0..ncols {
-        let mut nulls = 0usize;
-        let mut distinct: HashSet<String> = HashSet::new();
-        let mut capped = false;
-        for r in &result.rows {
-            match &r[c] {
-                Value::Null => nulls += 1,
-                v => {
-                    if distinct.len() < DISTINCT_CAP {
-                        distinct.insert(match v {
-                            Value::Text(t) => t.clone(),
-                            Value::Int(i) => i.to_string(),
-                            Value::Float(f) => f.to_string(),
-                            Value::Bool(b) => b.to_string(),
-                            Value::Null => unreachable!(),
-                        });
-                    } else {
-                        capped = true;
-                    }
+    let mut nulls = 0usize;
+    let mut distinct: HashSet<String> = HashSet::new();
+    let mut capped = false;
+    for r in &result.rows {
+        match &r[idx] {
+            Value::Null => nulls += 1,
+            v => {
+                if distinct.len() < DISTINCT_CAP {
+                    distinct.insert(match v {
+                        Value::Text(t) => t.clone(),
+                        Value::Int(i) => i.to_string(),
+                        Value::Float(f) => f.to_string(),
+                        Value::Bool(b) => b.to_string(),
+                        Value::Null => unreachable!(),
+                    });
+                } else {
+                    capped = true;
                 }
             }
         }
-        let numeric = is_numeric_col(&result, c);
-        let stats_json = if numeric {
-            let vals = col_f64(&result, c);
-            let st = bi_analytics::numeric_stats(&vals);
-            if numeric_cols.len() < MAX_CORR_COLS {
-                numeric_cols.push((c, vals));
-            }
-            st.map(|st| {
-                json!({
-                    "mean": round4(st.mean), "std": round4(st.std),
-                    "min": round4(st.min), "q25": round4(st.q25),
-                    "median": round4(st.median), "q75": round4(st.q75),
-                    "max": round4(st.max),
-                })
+    }
+    let numeric = is_numeric_col(result, idx);
+    let mut vals_out = None;
+    let stats_json = if numeric {
+        let vals = col_f64(result, idx);
+        let st = bi_analytics::numeric_stats(&vals);
+        vals_out = Some(vals);
+        st.map(|st| {
+            json!({
+                "mean": round4(st.mean), "std": round4(st.std),
+                "min": round4(st.min), "q25": round4(st.q25),
+                "median": round4(st.median), "q75": round4(st.q75),
+                "max": round4(st.max),
             })
-        } else {
-            None
-        };
-        columns_out.push(json!({
-            "name": result.columns[c],
+        })
+    } else {
+        None
+    };
+    (
+        json!({
+            "name": name,
             "kind": if numeric { "numeric" } else { "text" },
             "count": nrows - nulls,
             "nulls": nulls,
             "distinct": distinct.len(),
             "distinct_capped": capped,
             "stats": stats_json,
-        }));
+        }),
+        vals_out,
+    )
+}
+
+/// データプロファイルAPI。全列の統計を出す機能なので列を絞れないが、
+/// 全列を一度に読むとピークメモリが大きい(200万行で+317MB)。そこで
+/// **1列ずつ読んで統計を出し、相関に使う数値列だけ f64 配列で保持する**。
+/// テキスト列の String を抱え続けずに済むのが効きどころ。
+/// トレードオフ: ソースが重いSQLのときは列数ぶんクエリが実行される。
+pub fn api_profile(state: &mut AppState, req: &Json) -> BiResult<Json> {
+    let base = source_sql(req)?;
+    // 列名だけ先に取る(行は読まない)。`SELECT * FROM (base)` で包むと
+    // 同名の列がSQLite側で自動改名(p, p:1)されて重複を見逃すため、base のまま実行する
+    let names = state.engine.query(&base, 0)?.columns;
+    if names.is_empty() {
+        return Err("結果に列がありません".to_string());
     }
+    // 同名の列があると列名で取り出せない(JOINで両側に同じ列名があるSQL等)。
+    // その場合だけ従来どおり全列を一度に読む
+    let mut seen: HashSet<&str> = HashSet::new();
+    let by_column = names.iter().all(|n| seen.insert(n.as_str()));
+
+    let mut columns_out = Vec::with_capacity(names.len());
+    let mut numeric_cols: Vec<(String, Vec<f64>)> = Vec::new();
+    let mut keep = |name: &str, vals: Option<Vec<f64>>| {
+        if let Some(v) = vals {
+            if numeric_cols.len() < MAX_CORR_COLS {
+                numeric_cols.push((name.to_string(), v));
+            }
+        }
+    };
+    let (nrows, truncated) = if by_column {
+        let mut nrows = 0usize;
+        let mut truncated = false;
+        for name in &names {
+            let sql = format!("SELECT \"{}\" FROM ({base})", name.replace('"', "\"\""));
+            let col = state.engine.query(&sql, ANALYZE_LIMIT)?;
+            nrows = col.rows.len();
+            truncated = col.truncated;
+            let (js, vals) = profile_column(&col, 0, name);
+            columns_out.push(js);
+            keep(name, vals);
+        }
+        (nrows, truncated)
+    } else {
+        let result = resolve_source(state, req)?;
+        for c in 0..result.columns.len() {
+            let (js, vals) = profile_column(&result, c, &result.columns[c]);
+            columns_out.push(js);
+            keep(&result.columns[c], vals);
+        }
+        (result.rows.len(), result.truncated)
+    };
 
     // 相関行列と強相関ペア
-    let corr_names: Vec<&String> = numeric_cols
-        .iter()
-        .map(|(i, _)| &result.columns[*i])
-        .collect();
+    let corr_names: Vec<&String> = numeric_cols.iter().map(|(n, _)| n).collect();
     let mut matrix: Vec<Vec<Json>> = Vec::new();
     let mut pairs: Vec<(String, String, f64)> = Vec::new();
     for (i, (_, xi)) in numeric_cols.iter().enumerate() {
@@ -249,7 +290,7 @@ pub fn api_profile(state: &mut AppState, req: &Json) -> BiResult<Json> {
 
     Ok(json!({
         "n_rows": nrows,
-        "truncated": result.truncated,
+        "truncated": truncated,
         "columns": columns_out,
         "correlation": {"columns": corr_names, "matrix": matrix},
         "top_pairs": top_pairs,
@@ -1573,6 +1614,133 @@ mod tests {
             &json!({"source": ds("spc2"), "x": "v", "value": "v"})
         )
         .is_err());
+    }
+
+    // ---------- データプロファイルAPI ----------
+
+    /// 1列ずつ読む実装でも、列の種別・欠損・個別値数・統計・相関が正しく出る
+    #[test]
+    fn test_profile_columns_and_correlation() {
+        // x = 1..10、y = 2x(完全相関)、t はテキスト3種、n は欠損入りの数値
+        let rows: Vec<Vec<Value>> = (1..=10)
+            .map(|i| {
+                vec![
+                    Value::Text(format!("g{}", i % 3)),
+                    Value::Int(i),
+                    Value::Float(i as f64 * 2.0),
+                    if i == 4 {
+                        Value::Null
+                    } else {
+                        Value::Int(i * 10)
+                    },
+                ]
+            })
+            .collect();
+        let mut st = state_with(
+            "p",
+            &[
+                ("t", DataType::Utf8),
+                ("x", DataType::Int64),
+                ("y", DataType::Float64),
+                ("n", DataType::Int64),
+            ],
+            rows,
+        );
+
+        let r = api_profile(&mut st, &json!({"source": ds("p")})).unwrap();
+        assert_eq!(r["n_rows"], 10);
+        let cols = r["columns"].as_array().unwrap();
+        assert_eq!(cols.len(), 4);
+        // 列の順序は入力どおり
+        let names: Vec<&str> = cols.iter().map(|c| c["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["t", "x", "y", "n"]);
+        // テキスト列: 種別と個別値数、統計は付かない
+        assert_eq!(cols[0]["kind"], "text");
+        assert_eq!(cols[0]["distinct"], 3);
+        assert!(cols[0]["stats"].is_null());
+        // 数値列: 統計が付く
+        assert_eq!(cols[1]["kind"], "numeric");
+        assert_eq!(cols[1]["stats"]["min"], 1.0);
+        assert_eq!(cols[1]["stats"]["max"], 10.0);
+        assert_eq!(cols[1]["stats"]["mean"], 5.5);
+        // 欠損のある列は count/nulls に反映される(NULLは統計から除外)
+        assert_eq!(cols[3]["nulls"], 1);
+        assert_eq!(cols[3]["count"], 9);
+        assert_eq!(cols[3]["distinct"], 9);
+        // 相関: 数値列だけが対象で、y = 2x は r = 1
+        let corr = &r["correlation"];
+        let cnames: Vec<&str> = corr["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap())
+            .collect();
+        assert_eq!(cnames, ["x", "y", "n"]);
+        assert_eq!(corr["matrix"][0][1], 1.0);
+        assert_eq!(r["top_pairs"][0]["a"], "x");
+        assert_eq!(r["top_pairs"][0]["b"], "y");
+        assert_eq!(r["top_pairs"][0]["r"], 1.0);
+    }
+
+    /// 同名の列があるSQL(JOINで両側に同じ列名がある等)は列名で取り出せないため
+    /// 全列読みに切り替わる。どちらの経路でも同じ結果になることを確認する
+    #[test]
+    fn test_profile_duplicate_column_names() {
+        let rows: Vec<Vec<Value>> = (1..=8)
+            .map(|i| vec![Value::Int(i), Value::Int(i * 3)])
+            .collect();
+        let mut st = state_with(
+            "dup",
+            &[("a", DataType::Int64), ("b", DataType::Int64)],
+            rows,
+        );
+
+        // 1列ずつ読む経路(列名は一意)
+        let uniq = api_profile(
+            &mut st,
+            &json!({"source": {"kind": "sql", "sql": "SELECT a AS p, b AS q FROM \"dup\""}}),
+        )
+        .unwrap();
+        // 全列読みに落ちる経路(列名が重複)
+        let dup = api_profile(
+            &mut st,
+            &json!({"source": {"kind": "sql", "sql": "SELECT a AS p, b AS p FROM \"dup\""}}),
+        )
+        .unwrap();
+
+        assert_eq!(dup["n_rows"], 8);
+        let dcols = dup["columns"].as_array().unwrap();
+        assert_eq!(dcols.len(), 2); // 重複していても2列とも出る
+        assert_eq!(dcols[0]["name"], "p");
+        assert_eq!(dcols[1]["name"], "p");
+        // 列名以外の中身は経路によらず一致する
+        let ucols = uniq["columns"].as_array().unwrap();
+        for (u, d) in ucols.iter().zip(dcols) {
+            for k in ["kind", "count", "nulls", "distinct", "stats"] {
+                assert_eq!(u[k], d[k], "列 {} の {k}", u["name"]);
+            }
+        }
+        assert_eq!(uniq["correlation"]["matrix"], dup["correlation"]["matrix"]);
+    }
+
+    /// 列名に引用符や空白が含まれていても1列ずつ読むクエリが壊れない
+    #[test]
+    fn test_profile_odd_column_names() {
+        let rows: Vec<Vec<Value>> = (1..=5)
+            .map(|i| vec![Value::Int(i), Value::Text(format!("v{i}"))])
+            .collect();
+        let mut st = state_with(
+            "odd",
+            &[("we\"ird", DataType::Int64), ("with space", DataType::Utf8)],
+            rows,
+        );
+        let r = api_profile(&mut st, &json!({"source": ds("odd")})).unwrap();
+        let cols = r["columns"].as_array().unwrap();
+        assert_eq!(cols[0]["name"], "we\"ird");
+        assert_eq!(cols[0]["kind"], "numeric");
+        assert_eq!(cols[0]["count"], 5);
+        assert_eq!(cols[1]["name"], "with space");
+        assert_eq!(cols[1]["distinct"], 5);
     }
 
     // ---------- グループ別実行API ----------
