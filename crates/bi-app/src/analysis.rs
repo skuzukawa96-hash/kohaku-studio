@@ -512,6 +512,92 @@ pub fn api_spc(state: &mut AppState, req: &Json) -> BiResult<Json> {
     }))
 }
 
+// ---------- グループ別実行(v0.7) ----------
+
+/// 一度に実行するグループ数の上限(チャートのファセットと揃える)
+const GROUP_MAX: usize = 12;
+
+/// グループ列の値ごとにソースを絞り込み、既存の分析APIをそのまま呼んで
+/// 結果を並べて返す。分析側のコードには手を入れないため、返る結果の形は
+/// 単独実行時と完全に同じで、UIは既存の描画をグループ数だけ繰り返せばよい
+/// (チャートのファセット表示の分析版)。
+///
+/// 1グループの失敗(点数不足など)では全体を止めず、そのグループだけ
+/// error を持たせて返す。装置1台のデータが足りないだけで残りが見られなく
+/// なるのを避けるため。
+pub fn api_group(state: &mut AppState, req: &Json) -> BiResult<Json> {
+    let analysis = s(req, "analysis");
+    let group = s(req, "group");
+    if group.is_empty() {
+        return Err("グループ列を指定してください".to_string());
+    }
+    // 「1グループ=1パネル」として意味を持つ分析だけを対象にする
+    let run: fn(&mut AppState, &Json) -> BiResult<Json> = match analysis.as_str() {
+        "timeseries" => api_timeseries,
+        "regression" => api_regression,
+        "spc" => api_spc,
+        _ => {
+            return Err(format!(
+                "グループ別実行に対応していない分析です: {analysis}"
+            ))
+        }
+    };
+
+    let base = source_sql(req)?;
+    let ident = format!("\"{}\"", group.replace('"', "\"\""));
+    // グループ値の列挙(NULLは対象外)。上限+1件取って打ち切りを検出する
+    let listed = state.engine.query(
+        &format!("SELECT DISTINCT {ident} FROM ({base}) WHERE {ident} IS NOT NULL ORDER BY 1"),
+        GROUP_MAX + 1,
+    )?;
+    if listed.rows.is_empty() {
+        return Err(format!("列「{group}」に値がありません"));
+    }
+    let truncated = listed.rows.len() > GROUP_MAX;
+    // 打ち切った場合だけ実数を数え直す(数えていない値を報告しないため)
+    let total = if truncated {
+        let c = state.engine.query(
+            &format!("SELECT COUNT(DISTINCT {ident}) FROM ({base}) WHERE {ident} IS NOT NULL"),
+            1,
+        )?;
+        match c.rows.first().and_then(|r| r.first()) {
+            Some(Value::Int(n)) => *n as usize,
+            _ => listed.rows.len(),
+        }
+    } else {
+        listed.rows.len()
+    };
+
+    let mut groups = Vec::new();
+    for row in listed.rows.iter().take(GROUP_MAX) {
+        let (label, lit) = match &row[0] {
+            Value::Int(n) => (n.to_string(), n.to_string()),
+            Value::Float(f) => (f.to_string(), f.to_string()),
+            Value::Bool(b) => (b.to_string(), (*b as i64).to_string()),
+            Value::Text(t) => (t.clone(), format!("'{}'", t.replace('\'', "''"))),
+            Value::Null => continue,
+        };
+        let mut sub = req.clone();
+        sub["source"] = json!({
+            "kind": "sql",
+            "sql": format!("SELECT * FROM ({base}) WHERE {ident} = {lit}"),
+        });
+        match run(state, &sub) {
+            Ok(r) => groups.push(json!({"value": label, "result": r})),
+            Err(e) => groups.push(json!({"value": label, "error": e})),
+        }
+    }
+
+    Ok(json!({
+        "analysis": analysis,
+        "group": group,
+        "groups": groups,
+        "total": total,
+        "shown": groups.len(),
+        "truncated": truncated,
+    }))
+}
+
 // ---------- ロットトレース ----------
 
 /// 1データセットあたりの最大表示行数
@@ -1487,6 +1573,173 @@ mod tests {
             &json!({"source": ds("spc2"), "x": "v", "value": "v"})
         )
         .is_err());
+    }
+
+    // ---------- グループ別実行API ----------
+
+    /// 装置ごとにデータを分けてSPCを一括実行する。
+    /// グループ値ごとの絞り込みが効いていること(=各グループが自分の行だけを
+    /// 見ていること)を、装置ごとに違う中心線が出ることで確認する。
+    fn group_spc_state() -> AppState {
+        // A: 中心10, B: 中心20, C: 点数不足(5点)
+        let mut rows: Vec<Vec<Value>> = Vec::new();
+        for (g, base) in [("A", 10.0), ("B", 20.0)] {
+            for i in 0..12 {
+                let v = base + if i % 2 == 0 { -0.5 } else { 0.5 };
+                rows.push(vec![
+                    Value::Text(g.into()),
+                    Value::Text(format!("lot{i:02}")),
+                    Value::Float(v),
+                ]);
+            }
+        }
+        for i in 0..5 {
+            rows.push(vec![
+                Value::Text("C".into()),
+                Value::Text(format!("lot{i:02}")),
+                Value::Float(1.0),
+            ]);
+        }
+        rows.push(vec![
+            Value::Null,
+            Value::Text("lot99".into()),
+            Value::Float(1.0),
+        ]);
+        state_with(
+            "g",
+            &[
+                ("tool", DataType::Utf8),
+                ("lot", DataType::Utf8),
+                ("v", DataType::Float64),
+            ],
+            rows,
+        )
+    }
+
+    #[test]
+    fn test_group_runs_analysis_per_value() {
+        let mut st = group_spc_state();
+        let r = api_group(
+            &mut st,
+            &json!({"analysis": "spc", "group": "tool", "source": ds("g"), "x": "lot", "value": "v"}),
+        )
+        .unwrap();
+
+        let gs = r["groups"].as_array().unwrap();
+        // NULL は対象外なので A / B / C の3グループ
+        assert_eq!(gs.len(), 3);
+        assert_eq!(r["total"], 3);
+        assert_eq!(r["truncated"], false);
+        assert_eq!(gs[0]["value"], "A");
+        assert_eq!(gs[1]["value"], "B");
+        // 絞り込みが効いていれば中心線は各グループの値になる
+        assert!((gs[0]["result"]["center"].as_f64().unwrap() - 10.0).abs() < 0.01);
+        assert!((gs[1]["result"]["center"].as_f64().unwrap() - 20.0).abs() < 0.01);
+        assert_eq!(gs[0]["result"]["n_used"], 12);
+    }
+
+    /// 1グループが失敗しても他のグループの結果は返る(装置1台のデータ不足で
+    /// 全体が見られなくなるのを避けるため)
+    #[test]
+    fn test_group_keeps_going_after_one_failure() {
+        let mut st = group_spc_state();
+        let r = api_group(
+            &mut st,
+            &json!({"analysis": "spc", "group": "tool", "source": ds("g"), "x": "lot", "value": "v"}),
+        )
+        .unwrap();
+        let gs = r["groups"].as_array().unwrap();
+        assert_eq!(gs[2]["value"], "C");
+        assert!(gs[2]["result"].is_null());
+        assert!(
+            gs[2]["error"].as_str().unwrap().contains("8点以上"),
+            "{:?}",
+            gs[2]["error"]
+        );
+        // 失敗したグループの前後は成功している
+        assert!(gs[0]["error"].is_null() && gs[1]["error"].is_null());
+    }
+
+    /// 上限を超えたグループ数は打ち切り、総数は数え直して報告する
+    #[test]
+    fn test_group_truncates_and_counts_total() {
+        let mut rows: Vec<Vec<Value>> = Vec::new();
+        for g in 0..20 {
+            for i in 0..12 {
+                rows.push(vec![
+                    Value::Int(g),
+                    Value::Text(format!("lot{i:02}")),
+                    Value::Float(if i % 2 == 0 { 1.0 } else { 2.0 }),
+                ]);
+            }
+        }
+        let mut st = state_with(
+            "g2",
+            &[
+                ("tool", DataType::Int64),
+                ("lot", DataType::Utf8),
+                ("v", DataType::Float64),
+            ],
+            rows,
+        );
+        let r = api_group(
+            &mut st,
+            &json!({"analysis": "spc", "group": "tool", "source": ds("g2"), "x": "lot", "value": "v"}),
+        )
+        .unwrap();
+        assert_eq!(r["truncated"], true);
+        assert_eq!(r["shown"], GROUP_MAX);
+        assert_eq!(r["total"], 20); // 上限より多くても実数を報告する
+        assert_eq!(r["groups"].as_array().unwrap().len(), GROUP_MAX);
+    }
+
+    #[test]
+    fn test_group_errors() {
+        let mut st = group_spc_state();
+        let req = |a: &str, g: &str| json!({"analysis": a, "group": g, "source": ds("g"), "x": "lot", "value": "v"});
+        // 未対応の分析
+        let e = api_group(&mut st, &req("cluster", "tool")).unwrap_err();
+        assert!(e.contains("対応していない"), "{e}");
+        // グループ列の未指定
+        assert!(api_group(&mut st, &req("spc", "")).is_err());
+        // 値が1つもない列(全行NULLに相当する空の絞り込み)
+        let e = api_group(
+            &mut st,
+            &json!({"analysis": "spc", "group": "tool", "x": "lot", "value": "v",
+                    "source": {"kind": "sql", "sql": "SELECT * FROM \"g\" WHERE 0"}}),
+        )
+        .unwrap_err();
+        assert!(e.contains("値がありません"), "{e}");
+    }
+
+    /// グループ値に含まれるシングルクォートでSQLが壊れない
+    #[test]
+    fn test_group_escapes_quotes_in_value() {
+        let mut rows: Vec<Vec<Value>> = Vec::new();
+        for i in 0..12 {
+            rows.push(vec![
+                Value::Text("O'Brien".into()),
+                Value::Text(format!("lot{i:02}")),
+                Value::Float(if i % 2 == 0 { 4.5 } else { 5.5 }),
+            ]);
+        }
+        let mut st = state_with(
+            "g3",
+            &[
+                ("tool", DataType::Utf8),
+                ("lot", DataType::Utf8),
+                ("v", DataType::Float64),
+            ],
+            rows,
+        );
+        let r = api_group(
+            &mut st,
+            &json!({"analysis": "spc", "group": "tool", "source": ds("g3"), "x": "lot", "value": "v"}),
+        )
+        .unwrap();
+        let gs = r["groups"].as_array().unwrap();
+        assert_eq!(gs[0]["value"], "O'Brien");
+        assert_eq!(gs[0]["result"]["n_used"], 12);
     }
 
     // ---------- 装置差分析API ----------
