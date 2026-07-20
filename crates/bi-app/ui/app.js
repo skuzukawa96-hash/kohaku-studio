@@ -822,6 +822,9 @@ function renderChart(canvas, spec, result) {
   drawChartArea(ctx, w, h, spec, result, null, null);
 }
 
+/** ファセットの各パネル上部に確保するタイトル帯の高さ */
+const FACET_TITLE_H = 16;
+
 /** ファセット表示(seabornのFacetGrid相当)。指定列の値ごとにデータを分け、
  *  同じCanvas内に小さなチャートを格子状に描く。
  *  Y軸レンジ・ヒストグラムのビン・系列の色はセル間で共有する
@@ -928,7 +931,11 @@ function renderFacets(ctx, w, h, spec, result, fi, reg) {
   const n = shown.length;
   const cols = n <= 2 ? n : n <= 4 ? 2 : n <= 9 ? 3 : n <= 16 ? 4 : 5;
   const gridRows = Math.ceil(n / cols);
-  const cw = w / cols;
+  // 凡例(カラースケール等)を持つ登録チャートは、格子の外側右に領域を確保する。
+  // パネル内に描くと1枚だけ余白が変わり、マップの大きさと位置が揃わなくなる
+  const legendW = reg && reg.renderLegend ? reg.legendWidth || 76 : 0;
+  const gw = w - legendW;
+  const cw = gw / cols;
   const chh = h / gridRows;
   shown.forEach((name, i) => {
     ctx.save();
@@ -939,30 +946,34 @@ function renderFacets(ctx, w, h, spec, result, fi, reg) {
     const cellResult = { columns: result.columns, rows: byFacet.get(name) };
     if (reg) {
       // 登録チャート: ファセット名を上部に描き、残りの領域を render に渡す。
-      // shared.allRows で全ファセットの行を渡し、スケールの共有は render 側が行う。
-      // shared.primary はカラースケール等を代表セルだけに描くための目印
-      const TITLE_H = 16;
+      // shared.allRows で全ファセットの行を渡し、スケールの共有は render 側が行う
       ctx.fillStyle = CHART_COLORS.text;
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
       const tl = name.length > 24 ? name.slice(0, 24) + "…" : name;
       ctx.fillText(tl, cw / 2, 2);
-      ctx.translate(0, TITLE_H);
-      reg.render(ctx, cw, chh - TITLE_H, specShared, cellResult, CHART_HELPERS, {
+      ctx.translate(0, FACET_TITLE_H);
+      reg.render(ctx, cw, chh - FACET_TITLE_H, specShared, cellResult, CHART_HELPERS, {
         facetValue: name,
         allRows: result.rows,
-        primary: i === 0,
       });
     } else {
       drawChartArea(ctx, cw, chh, specShared, cellResult, name, shared);
     }
     ctx.restore();
   });
+  if (legendW) {
+    // 凡例は最上段の右端パネルの右隣(格子の外側)に置く
+    ctx.save();
+    ctx.translate(gw, FACET_TITLE_H);
+    reg.renderLegend(ctx, legendW, chh - FACET_TITLE_H, specShared, result, CHART_HELPERS);
+    ctx.restore();
+  }
   if (notes.length) {
     ctx.fillStyle = CHART_COLORS.text;
     ctx.textAlign = "right";
     ctx.textBaseline = "top";
-    ctx.fillText(notes.join(" / "), w - 4, 2);
+    ctx.fillText(notes.join(" / "), gw - 4, 2);
   }
 }
 
@@ -1363,6 +1374,40 @@ const CHART_HELPERS = {
 // ---------- ウェハーマップ(v0.4) ----------
 // ダイ座標(x, y)ごとに値を集計し、色分けした格子+ウェハー外周円として描画する
 
+/** 低=赤 / 中=黄 / 高=緑 の3点補間(歩留まりの直感に合わせる) */
+function waferColor(v, vMin, vMax) {
+  const lerp = (a, b, t) => Math.round(a + (b - a) * t);
+  const t = (v - vMin) / (vMax - vMin);
+  const [c0, c1, u] =
+    t < 0.5 ? [[224, 108, 117], [224, 208, 92], t * 2] : [[224, 208, 92], [88, 201, 164], t * 2 - 1];
+  return `rgb(${lerp(c0[0], c1[0], u)}, ${lerp(c0[1], c1[1], u)}, ${lerp(c0[2], c1[2], u)})`;
+}
+
+/** カラースケール(縦バー+上下の値ラベル)を (sx, sy) から高さ sh で描く */
+function drawWaferScale(ctx, sx, sy, sh, vMin, vMax, H) {
+  for (let i = 0; i < sh; i++) {
+    ctx.fillStyle = waferColor(vMax - ((vMax - vMin) * i) / sh, vMin, vMax);
+    ctx.fillRect(sx, sy + i, 14, 1);
+  }
+  ctx.fillStyle = H.colors.text;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText(H.fmtTick(vMax), sx + 18, sy + 8);
+  ctx.fillText(H.fmtTick(vMin), sx + 18, sy + sh);
+}
+
+/** ウェハーマップの値域(ファセット時は全ウェハー共通) */
+function waferRange(rows, vi) {
+  const vs = rows.map((r) => r[vi]).filter((v) => v !== null);
+  let vMin = Math.min(...vs);
+  let vMax = Math.max(...vs);
+  if (vMin === vMax) {
+    vMin -= 1;
+    vMax += 1;
+  }
+  return [vMin, vMax];
+}
+
 kohaku.registerChartType({
   type: "wafermap",
   label: "ウェハーマップ",
@@ -1396,15 +1441,14 @@ kohaku.registerChartType({
     const basis = shared && shared.allRows ? valid(shared.allRows) : dies;
     const xs = basis.map((r) => r[xi]);
     const ys = basis.map((r) => r[yi]);
-    const vs = basis.map((r) => r[vi]);
     const xMin = Math.min(...xs), xMax = Math.max(...xs);
     const yMin = Math.min(...ys), yMax = Math.max(...ys);
-    let vMin = Math.min(...vs), vMax = Math.max(...vs);
-    if (vMin === vMax) { vMin -= 1; vMax += 1; }
+    const [vMin, vMax] = waferRange(basis, vi);
 
-    // カラースケールは代表セル(先頭)だけに描く(全セル共通のため)
-    const showScale = !shared || shared.primary;
-    // 正方形セルでプロット領域(右にカラースケール分を確保)に収める
+    // ファセット時のカラースケールは格子の外側に本体が描く(renderLegend)。
+    // ここで1枚だけ右余白を広げるとマップの大きさと位置が揃わなくなる
+    const showScale = !shared;
+    // 正方形セルでプロット領域(単独表示時は右にカラースケール分を確保)に収める
     const m = { l: 16, r: showScale ? 80 : 16, t: 12, b: 28 };
     const nx = xMax - xMin + 1;
     const ny = yMax - yMin + 1;
@@ -1413,20 +1457,11 @@ kohaku.registerChartType({
     const ox = m.l + (w - m.l - m.r - gridW) / 2;
     const oy = m.t + (h - m.t - m.b - gridH) / 2;
 
-    // 低=赤 / 中=黄 / 高=緑 の3点補間(歩留まりの直感に合わせる)
-    const lerp = (a, b, t) => Math.round(a + (b - a) * t);
-    const colorOf = (v) => {
-      const t = (v - vMin) / (vMax - vMin);
-      const [c0, c1, u] =
-        t < 0.5 ? [[224, 108, 117], [224, 208, 92], t * 2] : [[224, 208, 92], [88, 201, 164], t * 2 - 1];
-      return `rgb(${lerp(c0[0], c1[0], u)}, ${lerp(c0[1], c1[1], u)}, ${lerp(c0[2], c1[2], u)})`;
-    };
-
     // ダイ描画(Y軸は上向きが正になるよう反転)
     for (const r of dies) {
       const cx = ox + (r[xi] - xMin) * cell;
       const cy = oy + (yMax - r[yi]) * cell;
-      ctx.fillStyle = colorOf(r[vi]);
+      ctx.fillStyle = waferColor(r[vi], vMin, vMax);
       ctx.fillRect(cx + 0.5, cy + 0.5, cell - 1, cell - 1);
     }
     // ウェハー外周円
@@ -1438,22 +1473,24 @@ kohaku.registerChartType({
     ctx.lineWidth = 1;
 
     if (showScale) {
-      // カラースケール(右端の縦バー)。ファセット時は代表セルのみ
-      const sx = w - m.r + 28;
-      const sy = m.t + 10;
-      const sh = h - m.t - m.b - 20;
-      for (let i = 0; i < sh; i++) {
-        ctx.fillStyle = colorOf(vMax - ((vMax - vMin) * i) / sh);
-        ctx.fillRect(sx, sy + i, 14, 1);
-      }
-      ctx.fillStyle = H.colors.text;
-      ctx.textAlign = "left";
-      ctx.fillText(H.fmtTick(vMax), sx + 18, sy + 8);
-      ctx.fillText(H.fmtTick(vMin), sx + 18, sy + sh);
+      // 単独表示時のカラースケール(右端の縦バー)
+      drawWaferScale(ctx, w - m.r + 28, m.t + 10, h - m.t - m.b - 20, vMin, vMax, H);
     }
     ctx.fillStyle = H.colors.text;
     ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
     ctx.fillText(`ダイ数: ${dies.length}`, m.l, h - 8);
+  },
+  // ファセット時のカラースケール。全ウェハー共通なので格子の外側に1つだけ描く
+  // (本体が最上段の右端パネルの右隣に配置する)
+  legendWidth: 76,
+  renderLegend(ctx, w, h, spec, result, H) {
+    const vi = result.columns.indexOf("v");
+    const rows = result.rows.filter((r) => r[vi] !== null);
+    if (!rows.length) return;
+    const [vMin, vMax] = waferRange(rows, vi);
+    // マップ本体(render の m.t / m.b)と同じ縦位置に揃える
+    drawWaferScale(ctx, 12, 22, h - 60, vMin, vMax, H);
   },
 });
 
