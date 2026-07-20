@@ -86,6 +86,24 @@ bi-app        HTTPサーバー(tiny_http) / SQLite in-memoryクエリエンジ�
 - CI の Rust stable はローカルより新しいことがある。ローカルで通るのに CI の clippy だけ落ちる場合は `rustup update stable` でローカルを揃えてから再現する。
 - コミット前に、変更が UI で確認できるものは必ず実際に動かして検証する（テストが通る ≠ 動く）。
 
+### リリース手順
+
+バージョン更新PR（`Cargo.toml` / `Cargo.lock` / `ROADMAP.md` / `CLAUDE.md`）をマージしてから、以下を実行する。
+**既定はオーナーが実行する**が、依頼があれば Claude が代行してよい（その場合も実行したコマンドを提示する）。
+
+```bash
+gh pr merge <N> --squash --delete-branch
+git checkout main; git pull origin main
+# タグは必ず注釈付き(-a)で作る。v0.2.0 以降すべて注釈付きで統一している
+git tag -a v0.6.0 -m "v0.6.0: per-column visualization (histogram hue, facet grids, multi-wafer maps)"
+git push origin v0.6.0
+gh release create v0.6.0 --title "Kohaku Studio v0.6.0" --generate-notes
+```
+
+- `--generate-notes` はPR一覧とFull Changelogを自動生成する。日本語の概要を冒頭に足す場合は `--notes-file` を併用する。
+- **公開済みのタグを作り直すと、そのタグに紐づく GitHub Release は下書きに戻る**（本文は残る）。
+  `gh release edit <tag> --draft=false` で公開し直すこと（v0.6.0 で実際に発生）。
+
 ## 規約
 
 - エラー型は `BiResult<T> = Result<T, String>`。コード内のコメント・エラーメッセージ・ドキュメントは**日本語**で書く（既存コードに合わせる）。
