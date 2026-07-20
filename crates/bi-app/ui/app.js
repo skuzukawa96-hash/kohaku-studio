@@ -482,7 +482,7 @@ function updateChartFormVisibility() {
   $("ch-bins-row").classList.toggle("hidden", type !== "histogram");
   $("ch-y-row").classList.toggle("hidden", type === "histogram" || type === "table");
   $("ch-x-row").classList.toggle("hidden", type === "table");
-  $("ch-series-row").classList.toggle("hidden", type === "histogram" || type === "table");
+  $("ch-series-row").classList.toggle("hidden", type === "table");
   $("ch-agg-row").classList.toggle("hidden", type === "histogram" || type === "table" || type === "scatter");
   $("ch-yrange-row").classList.toggle("hidden", type === "table");
 }
@@ -576,7 +576,7 @@ function buildChartQuery(spec, filters) {
     case "table":
       return `SELECT * FROM (${base}) LIMIT 500`;
     case "histogram":
-      return `SELECT ${x} AS x FROM (${base}) WHERE ${x} IS NOT NULL LIMIT 100000`;
+      return `SELECT ${x} AS x${s} FROM (${base}) WHERE ${x} IS NOT NULL LIMIT 100000`;
     case "scatter":
       return `SELECT ${x} AS x, ${y} AS y${s} FROM (${base}) WHERE ${x} IS NOT NULL AND ${y} IS NOT NULL LIMIT 20000`;
     default: {
@@ -902,29 +902,48 @@ function renderChart(canvas, spec, result) {
   };
 
   if (spec.chart_type === "histogram") {
-    const vals = result.rows.map((r) => Number(r[xi])).filter((v) => isFinite(v));
+    // 系列(色分け)対応: ビンの区切りは全系列で共有する。
+    // 系列ごとに区切りを変えると分布の形を比較できないため、必ず全体の範囲から作る
+    const seriesVals = seriesNames.map((n) =>
+      bySeries
+        .get(n)
+        .map((r) => Number(r[xi]))
+        .filter((v) => isFinite(v))
+    );
+    const vals = seriesVals.flat();
     if (!vals.length) return noData();
     const lo = Math.min(...vals), hi = Math.max(...vals);
     const nb = Math.max(2, Math.min(200, spec.bins || 20));
     const width = (hi - lo) || 1;
-    const counts = new Array(nb).fill(0);
-    for (const v of vals) {
-      let b = Math.floor(((v - lo) / width) * nb);
-      if (b >= nb) b = nb - 1;
-      counts[b]++;
-    }
-    const hRange = applyManualRange(spec, niceTicks(0, Math.max(...counts), 5), 5);
+    const countsPer = seriesVals.map((vs) => {
+      const counts = new Array(nb).fill(0);
+      for (const v of vs) {
+        let b = Math.floor(((v - lo) / width) * nb);
+        if (b >= nb) b = nb - 1;
+        counts[b]++;
+      }
+      return counts;
+    });
+    const yPeak = Math.max(...countsPer.map((c) => Math.max(...c)));
+    const hRange = applyManualRange(spec, niceTicks(0, yPeak, 5), 5);
     drawAxes(hRange.ticks, hRange.min, hRange.max);
     const hpy = (v) => m.t + ph - ((v - hRange.min) / ((hRange.max - hRange.min) || 1)) * ph;
     clipPlot(() => {
-      ctx.fillStyle = C.accent;
-      for (let b = 0; b < nb; b++) {
-        const bx = m.l + (b / nb) * pw;
-        const bw = pw / nb - 1;
-        // 棒は軸の下端から度数の高さまで(手動レンジで下端が0でなくても崩れない)
-        const top = hpy(counts[b]);
-        ctx.fillRect(bx, top, Math.max(1, bw), m.t + ph - top);
-      }
+      const overlay = seriesNames.length > 1;
+      countsPer.forEach((counts, k) => {
+        ctx.fillStyle = color(k);
+        // 複数系列は半透明で重ねる(重なりが色の濃さで見える)
+        ctx.globalAlpha = overlay ? 0.55 : 1;
+        for (let b = 0; b < nb; b++) {
+          if (!counts[b]) continue;
+          const bx = m.l + (b / nb) * pw;
+          const bw = pw / nb - 1;
+          // 棒は軸の下端から度数の高さまで(手動レンジで下端が0でなくても崩れない)
+          const top = hpy(counts[b]);
+          ctx.fillRect(bx, top, Math.max(1, bw), m.t + ph - top);
+        }
+      });
+      ctx.globalAlpha = 1;
     });
     // X軸ラベル
     ctx.fillStyle = C.text;
@@ -937,6 +956,8 @@ function renderChart(canvas, spec, result) {
     }
     ctx.fillText(spec.x, m.l + pw / 2, h - 16);
     drawYLabel();
+    drawLegend();
+    drawNotes();
     return;
   }
 
