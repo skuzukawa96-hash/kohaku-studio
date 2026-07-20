@@ -161,6 +161,7 @@
         <div class="an-controls">
           <label>目的変数 Y <select id="reg-y"></select></label>
           <div class="an-check-col">説明変数 X <div id="reg-x" class="checklist"></div></div>
+          <label title="選んだ列の値ごとに分けて回帰を実行し、結果を並べます">グループ分割 <select id="reg-group"></select></label>
           <button id="btn-an-reg" class="primary">▶ 回帰実行</button>
         </div>
         <div id="reg-out" class="an-out"></div>
@@ -201,6 +202,7 @@
               <option value="multiplicative">乗法(トレンド×季節)</option>
             </select>
           </label>
+          <label title="選んだ列の値ごとに分けて分解を実行し、結果を並べます">グループ分割 <select id="ts-group"></select></label>
           <button id="btn-an-ts" class="primary">▶ 分解実行</button>
         </div>
         <div class="hint">時間列で並べ替えた等間隔の系列として分解します(日付の欠けがある場合はSQLで補完してください)</div>

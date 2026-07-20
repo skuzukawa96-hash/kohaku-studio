@@ -1969,10 +1969,16 @@ async function anLoadColumns() {
   mkChecklist($("reg-x"));
   mkChecklist($("clu-x"));
   // 時系列分解: 時間列は全列から、値の列は数値列から選ぶ
-  const fillCols = (id, cols) => {
+  const fillCols = (id, cols, optional) => {
     const sel = $(id);
     const cur = sel.value;
     sel.innerHTML = "";
+    if (optional) {
+      const none = document.createElement("option");
+      none.value = "";
+      none.textContent = "(分割しない)";
+      sel.appendChild(none);
+    }
     for (const c of cols) {
       const op = document.createElement("option");
       op.value = c.name;
@@ -1985,6 +1991,9 @@ async function anLoadColumns() {
   fillCols("ts-y", numCols);
   fillCols("tool-g", anColumns);
   fillCols("tool-v", numCols);
+  // グループ分割は任意指定(空欄=分割しない)
+  fillCols("ts-group", anColumns, true);
+  fillCols("reg-group", anColumns, true);
   renderTestSelects();
   if (!numCols.length) $("an-cols-msg").textContent = "数値列がありません(ソースを選択してください)";
 }
@@ -2331,51 +2340,118 @@ async function runProfile() {
   }
 }
 
+// --- グループ別実行(v0.7) ---
+// グループ値ごとの絞り込みと分析の実行は Rust 側(/api/analyze/group)。
+// 返る結果は単独実行時と同じ形なので、UIは同じ描画関数を値の数だけ繰り返す。
+
+/** グループ分割ありで分析を実行し、値ごとのパネルを out に並べる。
+ *  1パネルの描画は renderInto(box, result) に任せる(単独実行と共通の関数)。 */
+async function runGrouped(analysis, group, req, out, renderInto) {
+  out.innerHTML = '<div class="hint">グループ別に実行中...</div>';
+  let r;
+  try {
+    r = await api("/api/analyze/group", { ...req, analysis, group });
+  } catch (e) {
+    out.innerHTML = `<div class="hint error">${esc(e.message)}</div>`;
+    return;
+  }
+  out.innerHTML = "";
+  if (r.truncated) {
+    const note = document.createElement("div");
+    note.className = "hint";
+    note.textContent = `${r.group}: ${r.total}件中 先頭${r.shown}件を表示`;
+    out.appendChild(note);
+  }
+  for (const g of r.groups) {
+    const box = document.createElement("div");
+    box.className = "an-group";
+    const h = document.createElement("h4");
+    h.textContent = `${r.group} = ${g.value}`;
+    box.appendChild(h);
+    out.appendChild(box); // 先にDOMへ入れる(Canvasのサイズ確定に必要)
+    if (g.error) {
+      // 1グループの失敗で他を消さない(サーバー側も止めずに返している)
+      const e = document.createElement("div");
+      e.className = "hint error";
+      e.textContent = g.error;
+      box.appendChild(e);
+    } else {
+      renderInto(box, g.result);
+    }
+  }
+}
+
+/** グループのパネルに結果表示用のCanvasを作って返す */
+function anGroupCanvas(box, cls) {
+  const canvas = document.createElement("canvas");
+  canvas.className = `an-canvas ${cls || ""}`;
+  box.appendChild(canvas);
+  return canvas;
+}
+
 // --- 回帰 ---
 
 async function runRegression() {
   const out = $("reg-out");
   const target = $("reg-y").value;
   const features = checkedValues($("reg-x")).filter((f) => f !== target);
-  out.innerHTML = '<div class="hint">分析中...</div>';
+  const group = $("reg-group").value;
+  const req = { source: anGetSource(), target, features };
   $("reg-canvas").classList.add("hidden");
+  if (group) {
+    await runGrouped("regression", group, req, out, (box, r) => {
+      box.insertAdjacentHTML("beforeend", regSummaryHtml(r));
+      regDraw(anGroupCanvas(box), r);
+    });
+    return;
+  }
+  out.innerHTML = '<div class="hint">分析中...</div>';
   try {
-    const r = await api("/api/analyze/regression", { source: anGetSource(), target, features });
-    let html = metricHtml([
-      ["決定係数 R²", fmtNum(r.r2, 4)],
-      ["自由度調整済み R²", fmtNum(r.adj_r2, 4)],
-      ["RMSE", fmtNum(r.rmse, 4)],
-      ["サンプル数", r.n.toLocaleString() + (r.dropped ? `(欠損除外 ${r.dropped}`  + ")" : "")],
-    ]);
-    html += '<div class="table-wrap"><table class="grid"><thead><tr><th>項</th><th>係数</th><th>標準誤差</th><th>t値</th></tr></thead><tbody>';
-    r.names.forEach((n, i) => {
-      html += `<tr><td>${esc(n)}</td><td class="num">${fmtNum(r.coef[i], 6)}</td>
-        <td class="num">${fmtNum(r.stderr[i], 6)}</td><td class="num">${fmtNum(r.tvalues[i], 2)}</td></tr>`;
-    });
-    html += "</tbody></table></div>";
-    // 回帰式
-    let eq = `${esc(r.target)} = ${fmtNum(r.coef[0], 4)}`;
-    r.names.slice(1).forEach((n, i) => {
-      const c = r.coef[i + 1];
-      eq += ` ${c >= 0 ? "+" : "−"} ${fmtNum(Math.abs(c), 4)} × ${esc(n)}`;
-    });
-    html += `<div class="hint">回帰式: ${eq}</div>`;
-    out.innerHTML = html;
-
+    const r = await api("/api/analyze/regression", req);
+    out.innerHTML = regSummaryHtml(r);
     const canvas = $("reg-canvas");
     canvas.classList.remove("hidden");
-    if (r.single_feature) {
-      const pts = r.points.map((p) => ({ x: p[0], y: p[1] }));
-      drawAnScatter(canvas, pts, {
-        xlab: r.feature, ylab: r.target,
-        line: { slope: r.coef[1], intercept: r.coef[0] },
-      });
-    } else {
-      const pts = r.points.map((p) => ({ x: p[0], y: p[1] }));
-      drawAnScatter(canvas, pts, { xlab: "実測値", ylab: "予測値", diag: true });
-    }
+    regDraw(canvas, r);
   } catch (e) {
     out.innerHTML = `<div class="hint error">${esc(e.message)}</div>`;
+  }
+}
+
+/** 回帰結果の要約HTML(単独実行・グループ別実行の共通処理) */
+function regSummaryHtml(r) {
+  let html = metricHtml([
+    ["決定係数 R²", fmtNum(r.r2, 4)],
+    ["自由度調整済み R²", fmtNum(r.adj_r2, 4)],
+    ["RMSE", fmtNum(r.rmse, 4)],
+    ["サンプル数", r.n.toLocaleString() + (r.dropped ? `(欠損除外 ${r.dropped}` + ")" : "")],
+  ]);
+  html += '<div class="table-wrap"><table class="grid"><thead><tr><th>項</th><th>係数</th><th>標準誤差</th><th>t値</th></tr></thead><tbody>';
+  r.names.forEach((n, i) => {
+    html += `<tr><td>${esc(n)}</td><td class="num">${fmtNum(r.coef[i], 6)}</td>
+      <td class="num">${fmtNum(r.stderr[i], 6)}</td><td class="num">${fmtNum(r.tvalues[i], 2)}</td></tr>`;
+  });
+  html += "</tbody></table></div>";
+  // 回帰式
+  let eq = `${esc(r.target)} = ${fmtNum(r.coef[0], 4)}`;
+  r.names.slice(1).forEach((n, i) => {
+    const c = r.coef[i + 1];
+    eq += ` ${c >= 0 ? "+" : "−"} ${fmtNum(Math.abs(c), 4)} × ${esc(n)}`;
+  });
+  html += `<div class="hint">回帰式: ${eq}</div>`;
+  return html;
+}
+
+/** 回帰の散布図(単独実行・グループ別実行の共通処理) */
+function regDraw(canvas, r) {
+  canvas.classList.remove("hidden");
+  const pts = r.points.map((p) => ({ x: p[0], y: p[1] }));
+  if (r.single_feature) {
+    drawAnScatter(canvas, pts, {
+      xlab: r.feature, ylab: r.target,
+      line: { slope: r.coef[1], intercept: r.coef[0] },
+    });
+  } else {
+    drawAnScatter(canvas, pts, { xlab: "実測値", ylab: "予測値", diag: true });
   }
 }
 
@@ -2555,31 +2631,45 @@ async function runTimeseries() {
     model: $("ts-model").value,
     agg: $("ts-agg").value,
   };
+  const group = $("ts-group").value;
+  if (group) {
+    $("ts-canvas").classList.add("hidden");
+    await runGrouped("timeseries", group, req, out, (box, r) => {
+      box.insertAdjacentHTML("beforeend", tsSummaryHtml(r));
+      drawDecomposition(anGroupCanvas(box, "ts-canvas"), r);
+    });
+    return;
+  }
   out.innerHTML = '<div class="hint">分解中...</div>';
   try {
     const r = await api("/api/analyze/timeseries", req);
-    const judge = (v) => (v >= 0.6 ? "強い" : v >= 0.3 ? "中程度" : "弱い");
-    let html = metricHtml([
-      ["トレンド強度", `${fmtNum(r.trend_strength, 2)}(${judge(r.trend_strength)})`],
-      ["季節性強度", `${fmtNum(r.seasonal_strength, 2)}(${judge(r.seasonal_strength)})`],
-      ["使用時点数", r.n_used.toLocaleString() + (r.dropped ? `(除外 ${r.dropped}行)` : "")],
-      ["周期", r.period],
-    ]);
-    html += '<div class="table-wrap"><table class="grid"><thead><tr><th>位相(周期内の位置)</th>';
-    r.seasonal_pattern.forEach((_, i) => (html += `<th>${i + 1}</th>`));
-    html += "</tr></thead><tbody><tr><td>季節成分</td>";
-    r.seasonal_pattern.forEach((v) => (html += `<td class="num">${fmtNum(v, 3)}</td>`));
-    html += "</tr></tbody></table></div>";
-    html +=
-      '<div class="hint">強度は0〜1(1に近いほど成分が支配的)。両端のトレンド・残差は移動平均の性質上、計算対象外です。' +
-      (r.sampled ? "表示は間引いています(分解は全時点で実行済み)。" : "") +
-      "</div>";
-    out.innerHTML = html;
+    out.innerHTML = tsSummaryHtml(r);
     drawDecomposition($("ts-canvas"), r);
   } catch (e) {
     $("ts-canvas").classList.add("hidden");
     out.innerHTML = `<div class="hint error">${esc(e.message)}</div>`;
   }
+}
+
+/** 時系列分解の要約HTML(単独実行・グループ別実行の共通処理) */
+function tsSummaryHtml(r) {
+  const judge = (v) => (v >= 0.6 ? "強い" : v >= 0.3 ? "中程度" : "弱い");
+  let html = metricHtml([
+    ["トレンド強度", `${fmtNum(r.trend_strength, 2)}(${judge(r.trend_strength)})`],
+    ["季節性強度", `${fmtNum(r.seasonal_strength, 2)}(${judge(r.seasonal_strength)})`],
+    ["使用時点数", r.n_used.toLocaleString() + (r.dropped ? `(除外 ${r.dropped}行)` : "")],
+    ["周期", r.period],
+  ]);
+  html += '<div class="table-wrap"><table class="grid"><thead><tr><th>位相(周期内の位置)</th>';
+  r.seasonal_pattern.forEach((_, i) => (html += `<th>${i + 1}</th>`));
+  html += "</tr></thead><tbody><tr><td>季節成分</td>";
+  r.seasonal_pattern.forEach((v) => (html += `<td class="num">${fmtNum(v, 3)}</td>`));
+  html += "</tr></tbody></table></div>";
+  html +=
+    '<div class="hint">強度は0〜1(1に近いほど成分が支配的)。両端のトレンド・残差は移動平均の性質上、計算対象外です。' +
+    (r.sampled ? "表示は間引いています(分解は全時点で実行済み)。" : "") +
+    "</div>";
+  return html;
 }
 
 /** 分解結果を3段(観測+トレンド / 季節成分 / 残差)で描画する */

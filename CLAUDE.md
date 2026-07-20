@@ -64,7 +64,7 @@ bi-app        HTTPサーバー(tiny_http) / SQLite in-memoryクエリエンジ�
 
 - `crates/bi-app/src/server.rs` — HTTPサーバー。全APIは `POST /api/*`（JSON）で、`handle_api()` がディスパッチする。新しいAPIはここに追加。ローカルCSRF対策（POSTのみ / `Content-Type: application/json` 必須 / `Origin` は localhost のみ許可）を壊さないこと。
 - `crates/bi-app/src/engine.rs` — SQLite in-memory クエリエンジン。省メモリ用PRAGMA設定あり。
-- `crates/bi-app/src/analysis.rs` — 分析API（profile / regression / cluster / advise / test）。
+- `crates/bi-app/src/analysis.rs` — 分析API（profile / regression / cluster / advise / test）。**グループ別実行（`api_group`）は既存の分析関数を再利用する**（グループ値ごとに `source` を絞り込んだ SQL に差し替えて呼ぶだけ）。対応分析を増やすときは `api_group` の match に足す。個別の分析関数にグループ対応を書かないこと。1グループの失敗で全体を止めず、そのグループだけ `error` を返す。
 - `crates/bi-app/ui/` — 内蔵UI（vanilla JS + 自前Canvasレンダラ、約3,000行の `app.js`）。`include_str!` でバイナリに埋め込まれるため、**UIの変更も再ビルドが必要**。JSライブラリの追加は不可（オフライン完結・依存ゼロ）。注意: incrementalビルドが `ui/*.js` の変更を拾わないことがある。UI変更が反映されない時は `ui/` 配下のファイルを touch してからビルドするか `cargo clean -p bi-app` する。
 - **配色は `ui/style.css` のCSS変数に一元化する**（ダーク既定 / `<html data-theme="light">` でライト）。JSに色をハードコードしないこと。Canvasの色は `refreshThemeColors()` がCSS変数から読んで `CHART_COLORS` / `SERIES_COLORS` に入れる。新しい描画関数は先頭で `registerRedraw(canvas, () => 同じ引数で再描画)` を呼ぶ（テーマ切替時に描き直すため）。**ブランド色（`--accent`＝琥珀）はUI用、データの色は `--chart-primary` / `--series-N` を使う**（混ぜない）。
 - `crates/bi-analytics/src/` — `lib.rs`（統計・回帰・k-means++）、`htest.rs`（統計検定・効果量・多重比較）、`distributions.rs`（p値計算）、`advisor.rs`（検定の自動提案）。**このクレートは外部依存なし（serdeのみ）を維持する。**
