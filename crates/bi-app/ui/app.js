@@ -424,6 +424,7 @@ function chartSpecFromForm() {
     y: $("ch-y").value,
     value: $("ch-value").value,
     series: $("ch-series").value,
+    facet: $("ch-facet").value,
     agg: $("ch-agg").value,
     bins: parseInt($("ch-bins").value, 10) || 20,
     // Y軸の手動レンジ(空欄なら自動)
@@ -446,6 +447,7 @@ function loadChartToForm(spec) {
     $("ch-y").value = spec.y || "";
     $("ch-value").value = spec.value || "";
     $("ch-series").value = spec.series || "";
+    $("ch-facet").value = spec.facet || "";
     $("ch-agg").value = spec.agg || "none";
     $("ch-bins").value = spec.bins || 20;
     $("ch-ymin").value = spec.y_min ?? "";
@@ -474,6 +476,7 @@ function updateChartFormVisibility() {
     $("ch-y-label").textContent = typeof f.y === "string" ? f.y : "Y列";
     $("ch-value-label").textContent = typeof f.value === "string" ? f.value : "値の列";
     $("ch-yrange-row").classList.toggle("hidden", !f.yrange);
+    $("ch-facet-row").classList.toggle("hidden", !f.facet);
     return;
   }
   $("ch-x-label").textContent = "X列";
@@ -483,6 +486,7 @@ function updateChartFormVisibility() {
   $("ch-y-row").classList.toggle("hidden", type === "histogram" || type === "table");
   $("ch-x-row").classList.toggle("hidden", type === "table");
   $("ch-series-row").classList.toggle("hidden", type === "table");
+  $("ch-facet-row").classList.toggle("hidden", type === "table");
   $("ch-agg-row").classList.toggle("hidden", type === "histogram" || type === "table" || type === "scatter");
   $("ch-yrange-row").classList.toggle("hidden", type === "table");
 }
@@ -527,12 +531,12 @@ async function loadChartColumns() {
   } catch (e) {
     /* SQL未完成時は無視 */
   }
-  for (const id of ["ch-x", "ch-y", "ch-value", "ch-series"]) {
+  for (const id of ["ch-x", "ch-y", "ch-value", "ch-series", "ch-facet"]) {
     const sel = $(id);
     const cur = sel.value;
     sel.innerHTML = "";
-    if (id === "ch-series") {
-      // 系列は任意指定(既定は単一系列)
+    if (id === "ch-series" || id === "ch-facet") {
+      // 系列・ファセットは任意指定(既定はなし)
       const none = document.createElement("option");
       none.value = "";
       none.textContent = "(なし)";
@@ -572,20 +576,26 @@ function buildChartQuery(spec, filters) {
   const x = qi(spec.x), y = qi(spec.y);
   // 系列列(任意)。指定時は s 列としてSELECTに含める
   const s = spec.series ? `, ${qi(spec.series)} AS s` : "";
+  // ファセット列(任意)。指定時は f 列としてSELECTに含める
+  const f = spec.facet ? `, ${qi(spec.facet)} AS f` : "";
   switch (spec.chart_type) {
     case "table":
       return `SELECT * FROM (${base}) LIMIT 500`;
     case "histogram":
-      return `SELECT ${x} AS x${s} FROM (${base}) WHERE ${x} IS NOT NULL LIMIT 100000`;
+      return `SELECT ${x} AS x${s}${f} FROM (${base}) WHERE ${x} IS NOT NULL LIMIT 100000`;
     case "scatter":
-      return `SELECT ${x} AS x, ${y} AS y${s} FROM (${base}) WHERE ${x} IS NOT NULL AND ${y} IS NOT NULL LIMIT 20000`;
+      return `SELECT ${x} AS x, ${y} AS y${s}${f} FROM (${base}) WHERE ${x} IS NOT NULL AND ${y} IS NOT NULL LIMIT 20000`;
     default: {
       if (spec.agg === "none") {
-        return `SELECT ${x} AS x, ${y} AS y${s} FROM (${base}) LIMIT 20000`;
+        return `SELECT ${x} AS x, ${y} AS y${s}${f} FROM (${base}) LIMIT 20000`;
       }
       const agg = spec.agg === "count" ? "COUNT(*)" : `${spec.agg.toUpperCase()}(${y})`;
-      const grp = spec.series ? `${x}, ${qi(spec.series)}` : x;
-      return `SELECT ${x} AS x, ${agg} AS y${s} FROM (${base}) GROUP BY ${grp} ORDER BY ${x} LIMIT 4000`;
+      const grp = [x, spec.series ? qi(spec.series) : null, spec.facet ? qi(spec.facet) : null]
+        .filter(Boolean)
+        .join(", ");
+      // ファセット時はグループ数が増えるため上限を広げる
+      const lim = spec.facet ? 12000 : 4000;
+      return `SELECT ${x} AS x, ${agg} AS y${s}${f} FROM (${base}) GROUP BY ${grp} ORDER BY ${x} LIMIT ${lim}`;
     }
   }
 }
@@ -797,6 +807,148 @@ function renderChart(canvas, spec, result) {
     ctx.fillText(`未対応のチャートタイプです: ${spec.chart_type}(プラグインが必要な可能性があります)`, 16, 24);
     return;
   }
+  // ファセット分割(f列があれば、値ごとに小さなチャートを格子状に描く)
+  const fci = result.columns.indexOf("f");
+  if (spec.facet && fci >= 0) {
+    renderFacets(ctx, w, h, spec, result, fci);
+    return;
+  }
+  drawChartArea(ctx, w, h, spec, result, null, null);
+}
+
+/** ファセット表示(seabornのFacetGrid相当)。指定列の値ごとにデータを分け、
+ *  同じCanvas内に小さなチャートを格子状に描く。
+ *  Y軸レンジ・ヒストグラムのビン・系列の色はセル間で共有する
+ *  (揃えないとパネル同士を見比べられないため)。 */
+function renderFacets(ctx, w, h, spec, result, fi) {
+  const MAX_FACETS = 12;
+  const names = [];
+  const byFacet = new Map();
+  for (const r of result.rows) {
+    const k = r[fi] === null ? "(null)" : String(r[fi]);
+    if (!byFacet.has(k)) {
+      byFacet.set(k, []);
+      names.push(k);
+    }
+    byFacet.get(k).push(r);
+  }
+  if (!names.length) {
+    ctx.fillStyle = CHART_COLORS.text;
+    ctx.textAlign = "center";
+    ctx.fillText("データがありません", w / 2, h / 2);
+    return;
+  }
+  const notes = [];
+  let shown = names;
+  if (names.length > MAX_FACETS) {
+    shown = names.slice(0, MAX_FACETS);
+    notes.push(`${spec.facet}: ${names.length}件中 先頭${MAX_FACETS}件を表示`);
+  }
+
+  const shared = {};
+  // 系列の色と凡例の並びをセル間で固定する
+  // (セルごとに出現順で色を割ると、同じ系列が別の色になってしまう)
+  const si = result.columns.indexOf("s");
+  if (si >= 0) {
+    const order = [];
+    for (const r of result.rows) {
+      const n = r[si] === null ? "(null)" : String(r[si]);
+      if (!order.includes(n)) order.push(n);
+    }
+    if (order.length > 8) {
+      notes.push(`${order.length}系列中 先頭8系列を表示`);
+    }
+    shared.seriesOrder = order.slice(0, 8);
+  }
+
+  // Y軸レンジの共有(ユーザーが手動指定していないときだけ)
+  const specShared = { ...spec };
+  const xi = result.columns.indexOf("x");
+  if (spec.chart_type === "histogram") {
+    const vals = result.rows.map((r) => Number(r[xi])).filter((v) => isFinite(v));
+    if (vals.length) {
+      const lo = Math.min(...vals);
+      const hi = Math.max(...vals);
+      shared.histRange = [lo, hi]; // ビンの区切りも全セルで共有
+      if (numOrNull(spec.y_min) === null && numOrNull(spec.y_max) === null) {
+        // 共有ビンで各ファセットの最大度数を求め、度数軸も揃える
+        const nb = Math.max(2, Math.min(200, spec.bins || 20));
+        const width = hi - lo || 1;
+        let peak = 1;
+        for (const name of shown) {
+          const counts = new Array(nb).fill(0);
+          for (const r of byFacet.get(name)) {
+            const v = Number(r[xi]);
+            if (!isFinite(v)) continue;
+            let b = Math.floor(((v - lo) / width) * nb);
+            if (b >= nb) b = nb - 1;
+            peak = Math.max(peak, ++counts[b]);
+          }
+        }
+        const t = niceTicks(0, peak, 5);
+        specShared.y_min = String(t[0]);
+        specShared.y_max = String(t[t.length - 1]);
+      }
+    }
+  } else if (numOrNull(spec.y_min) === null && numOrNull(spec.y_max) === null) {
+    const yi = result.columns.indexOf("y");
+    let gmin = Infinity;
+    let gmax = -Infinity;
+    if (yi >= 0) {
+      for (const r of result.rows) {
+        const v = Number(r[yi]);
+        if (isFinite(v)) {
+          gmin = Math.min(gmin, v);
+          gmax = Math.max(gmax, v);
+        }
+      }
+    }
+    if (isFinite(gmin)) {
+      if (spec.chart_type === "bar") {
+        // 棒グラフは0基点を維持する
+        gmin = Math.min(0, gmin);
+        gmax = Math.max(0, gmax);
+      }
+      const t = niceTicks(gmin, gmax, 5);
+      specShared.y_min = String(t[0]);
+      specShared.y_max = String(t[t.length - 1]);
+    }
+  }
+
+  // 格子レイアウト(件数から列数を決める)
+  const n = shown.length;
+  const cols = n <= 2 ? n : n <= 4 ? 2 : n <= 9 ? 3 : 4;
+  const gridRows = Math.ceil(n / cols);
+  const cw = w / cols;
+  const chh = h / gridRows;
+  shown.forEach((name, i) => {
+    ctx.save();
+    ctx.translate((i % cols) * cw, Math.floor(i / cols) * chh);
+    ctx.beginPath();
+    ctx.rect(0, 0, cw, chh);
+    ctx.clip();
+    drawChartArea(
+      ctx,
+      cw,
+      chh,
+      specShared,
+      { columns: result.columns, rows: byFacet.get(name) },
+      name,
+      shared
+    );
+    ctx.restore();
+  });
+  if (notes.length) {
+    ctx.fillStyle = CHART_COLORS.text;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "top";
+    ctx.fillText(notes.join(" / "), w - 4, 2);
+  }
+}
+
+/** 1つのチャートを (0,0)〜(w,h) に描く。title はファセット名(ファセット時のみ)、
+ *  shared はファセット間で共有する設定(系列の並び・ヒストグラムのビン範囲)。 */
+function drawChartArea(ctx, w, h, spec, result, title, shared) {
   const xi = result.columns.indexOf("x");
   const yi = result.columns.indexOf("y");
   const si = result.columns.indexOf("s");
@@ -807,7 +959,15 @@ function renderChart(canvas, spec, result) {
   const notes = [];
   let seriesNames = [];
   const bySeries = new Map();
-  if (si >= 0) {
+  if (si >= 0 && shared && shared.seriesOrder) {
+    // ファセット間で系列の色と凡例を揃える
+    seriesNames = shared.seriesOrder;
+    for (const n of seriesNames) bySeries.set(n, []);
+    for (const r of result.rows) {
+      const name = r[si] === null ? "(null)" : String(r[si]);
+      if (bySeries.has(name)) bySeries.get(name).push(r);
+    }
+  } else if (si >= 0) {
     for (const r of result.rows) {
       const name = r[si] === null ? "(null)" : String(r[si]);
       if (!bySeries.has(name)) {
@@ -828,7 +988,8 @@ function renderChart(canvas, spec, result) {
   const color = (k) => (si >= 0 ? SERIES_COLORS[k % SERIES_COLORS.length] : C.accent);
 
   const yLabel = chartYLabel(spec);
-  const m = { l: 58 + (yLabel ? 16 : 0), r: 16, t: hasLegend ? 34 : 14, b: 52 };
+  const tOff = title ? 16 : 0; // ファセット名の分だけ上に余白を足す
+  const m = { l: 58 + (yLabel ? 16 : 0), r: 16, t: (hasLegend ? 34 : 14) + tOff, b: 52 };
   const pw = w - m.l - m.r, ph = h - m.t - m.b;
 
   const drawYLabel = () => {
@@ -843,6 +1004,15 @@ function renderChart(canvas, spec, result) {
     ctx.restore();
   };
 
+  const drawTitle = () => {
+    if (!title) return;
+    ctx.fillStyle = C.text;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    const tl = title.length > 24 ? title.slice(0, 24) + "…" : title;
+    ctx.fillText(tl, w / 2, 3);
+  };
+
   const drawLegend = () => {
     if (!hasLegend) return;
     ctx.textAlign = "left";
@@ -853,9 +1023,9 @@ function renderChart(canvas, spec, result) {
       const need = 14 + ctx.measureText(lb).width + 16;
       if (lx + need > w - m.r) break; // 幅に収まらない分は省略
       ctx.fillStyle = color(k);
-      ctx.fillRect(lx, 10, 10, 10);
+      ctx.fillRect(lx, 10 + tOff, 10, 10);
       ctx.fillStyle = C.text;
-      ctx.fillText(lb, lx + 14, 15);
+      ctx.fillText(lb, lx + 14, 15 + tOff);
       lx += need;
     }
   };
@@ -865,7 +1035,7 @@ function renderChart(canvas, spec, result) {
     ctx.fillStyle = C.text;
     ctx.textAlign = "right";
     ctx.textBaseline = "top";
-    ctx.fillText(notes.join(" / "), w - m.r, hasLegend ? 24 : 2);
+    ctx.fillText(notes.join(" / "), w - m.r, (hasLegend ? 24 : 2) + tOff);
   };
 
   const drawAxes = (yTicks, yMin, yMax) => {
@@ -901,6 +1071,8 @@ function renderChart(canvas, spec, result) {
     ctx.fillText("データがありません", w / 2, h / 2);
   };
 
+  drawTitle();
+
   if (spec.chart_type === "histogram") {
     // 系列(色分け)対応: ビンの区切りは全系列で共有する。
     // 系列ごとに区切りを変えると分布の形を比較できないため、必ず全体の範囲から作る
@@ -912,7 +1084,9 @@ function renderChart(canvas, spec, result) {
     );
     const vals = seriesVals.flat();
     if (!vals.length) return noData();
-    const lo = Math.min(...vals), hi = Math.max(...vals);
+    // ファセット表示ではビンの区切りを全セルで共有する
+    const lo = shared && shared.histRange ? shared.histRange[0] : Math.min(...vals);
+    const hi = shared && shared.histRange ? shared.histRange[1] : Math.max(...vals);
     const nb = Math.max(2, Math.min(200, spec.bins || 20));
     const width = (hi - lo) || 1;
     const countsPer = seriesVals.map((vs) => {

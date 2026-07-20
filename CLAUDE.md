@@ -78,6 +78,7 @@ bi-app        HTTPサーバー(tiny_http) / SQLite in-memoryクエリエンジ�
 - **新しいチャートタイプ**: `bi-app/ui/app.js` の `kohaku.registerChartType()` で登録する（`docs/plugin-api-draft.md` 6章と同一のAPI。実装例はウェハーマップ）。既存5種（棒/折れ線/散布図/ヒストグラム/テーブル）のみ従来どおり `buildChartQuery()` / `renderChart()` 内の分岐。
   - `form` で使うフォーム行を宣言する（`{x, y, value, series, agg, yrange}`。文字列を渡すとラベルを差し替え）。
   - **軸のレンジは `niceTicks()`（自動。データ範囲を必ず覆う）→ `H.applyManualRange(spec, ticks, count)`（手動指定を重ねる）の順で求め、データの描画は必ずプロット領域でクリップする**。この3点を守らないとプロットが枠外に出て軸ラベルと重なる。範囲外に出る注釈線（管理限界など）は描画せず、その旨を画面に明示すること。
+  - 組み込みチャートの描画は `renderChart`（入口）→ `renderFacets`（ファセット分割）→ `drawChartArea`（1枚を描く）の3層。ファセット間では **Y軸レンジ・ヒストグラムのビン・系列の色順を必ず共有する**（`shared` 引数）。揃えないとパネル同士を見比べられない。
 
 ## 開発フロー
 
