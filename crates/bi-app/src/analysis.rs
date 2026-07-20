@@ -33,14 +33,14 @@ fn str_list(v: &Json, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// source: {kind: "dataset"|"sql", dataset?/sql?} をクエリ結果に解決する
-fn resolve_source(state: &AppState, req: &Json) -> BiResult<QueryResult> {
+/// source: {kind: "dataset"|"sql", dataset?/sql?} を元データのSQLに解決する
+fn source_sql(req: &Json) -> BiResult<String> {
     let src = req.get("source").ok_or("sourceが指定されていません")?;
     let kind = src
         .get("kind")
         .and_then(|x| x.as_str())
         .unwrap_or("dataset");
-    let sql = if kind == "sql" {
+    if kind == "sql" {
         let q = src
             .get("sql")
             .and_then(|x| x.as_str())
@@ -51,15 +51,60 @@ fn resolve_source(state: &AppState, req: &Json) -> BiResult<QueryResult> {
         if q.is_empty() {
             return Err("SQLが空です".to_string());
         }
-        q
+        Ok(q)
     } else {
         let ds = src.get("dataset").and_then(|x| x.as_str()).unwrap_or("");
         if ds.is_empty() {
             return Err("データセットを指定してください".to_string());
         }
-        format!("SELECT * FROM \"{}\"", ds.replace('"', "\"\""))
-    };
-    state.engine.query(&sql, ANALYZE_LIMIT)
+        Ok(format!("SELECT * FROM \"{}\"", ds.replace('"', "\"\"")))
+    }
+}
+
+/// 使う列だけを読み込む。分析APIが必要とするのは数列だけなのに全列を読むと
+/// メモリのピークが跳ね上がるため(200万行×8列で +330MB)、SQL側で射影する。
+/// cols が空なら全列(プロファイルのように全列が必要なAPI用)。
+/// 指定した列が解決できないときは全列で読み直し、列名エラーは呼び出し側の
+/// col_index に「列「X」が見つかりません」を出させる。
+fn resolve_source_cols(state: &AppState, req: &Json, cols: &[String]) -> BiResult<QueryResult> {
+    let base = source_sql(req)?;
+    if cols.is_empty() {
+        return state.engine.query(&base, ANALYZE_LIMIT);
+    }
+    let list = cols
+        .iter()
+        .map(|c| format!("\"{}\"", c.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let projected = format!("SELECT {list} FROM ({base})");
+    match state.engine.query(&projected, ANALYZE_LIMIT) {
+        Ok(r) => Ok(r),
+        Err(_) => state.engine.query(&base, ANALYZE_LIMIT),
+    }
+}
+
+/// 全列を読み込む(プロファイルなど列を限定できないAPI用)
+fn resolve_source(state: &AppState, req: &Json) -> BiResult<QueryResult> {
+    resolve_source_cols(state, req, &[])
+}
+
+/// 検定・提案APIが使う可能性のある列(モードによって使うキーが変わるため、
+/// 指定されているものをまとめて拾う。余分に拾っても射影に使うだけで害はない)
+fn test_cols(req: &Json) -> Vec<String> {
+    cols_from(req, &["target", "group", "x", "y", "row", "col", "column"])
+}
+
+/// req の指定キーから列名を集める(空・重複は除く)。射影する列の指定に使う
+fn cols_from(req: &Json, keys: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for k in keys {
+        let v = s(req, k);
+        let v = v.trim().to_string();
+        if !v.is_empty() && !out.contains(&v) {
+            out.push(v);
+        }
+    }
+    out
 }
 
 /// 列を f64 ベクトルに変換する(数値以外・NULLは NaN)
@@ -225,7 +270,9 @@ pub fn api_regression(state: &mut AppState, req: &Json) -> BiResult<Json> {
     if features.contains(&target) {
         return Err("目的変数と説明変数が重複しています".to_string());
     }
-    let result = resolve_source(state, req)?;
+    let mut cols = vec![target.clone()];
+    cols.extend(features.iter().cloned());
+    let result = resolve_source_cols(state, req, &cols)?;
     let ti = col_index(&result, &target)?;
     let fis: Vec<usize> = features
         .iter()
@@ -302,7 +349,7 @@ pub fn api_timeseries(state: &mut AppState, req: &Json) -> BiResult<Json> {
     let multiplicative = s(req, "model") == "multiplicative";
     let use_avg = s(req, "agg") == "avg";
 
-    let result = resolve_source(state, req)?;
+    let result = resolve_source_cols(state, req, &cols_from(req, &["x", "y"]))?;
     let xi = col_index(&result, &x_col)?;
     let yi = col_index(&result, &y_col)?;
     let ys = col_f64(&result, yi);
@@ -393,7 +440,7 @@ pub fn api_spc(state: &mut AppState, req: &Json) -> BiResult<Json> {
     }
     let use_sum = s(req, "agg") == "sum";
 
-    let result = resolve_source(state, req)?;
+    let result = resolve_source_cols(state, req, &cols_from(req, &["x", "value"]))?;
     let xi = col_index(&result, &x_col)?;
     let vi = col_index(&result, &v_col)?;
     let vs = col_f64(&result, vi);
@@ -555,7 +602,7 @@ pub fn api_tooldiff(state: &mut AppState, req: &Json) -> BiResult<Json> {
     }
     let alpha = 0.05;
 
-    let result = resolve_source(state, req)?;
+    let result = resolve_source_cols(state, req, &cols_from(req, &["group", "value"]))?;
     let gi = col_index(&result, &g_col)?;
     let ti = col_index(&result, &v_col)?;
     let all_groups = build_groups(&result, ti, gi)?;
@@ -671,7 +718,7 @@ pub fn api_cluster_elbow(state: &mut AppState, req: &Json) -> BiResult<Json> {
         .unwrap_or(10)
         .clamp(2, 20) as usize;
 
-    let result = resolve_source(state, req)?;
+    let result = resolve_source_cols(state, req, &features)?;
     let fis: Vec<usize> = features
         .iter()
         .map(|f| col_index(&result, f))
@@ -708,7 +755,13 @@ pub fn api_cluster(state: &mut AppState, req: &Json) -> BiResult<Json> {
         .clamp(2, 50) as usize;
     let save_as = s(req, "save_as");
 
-    let result = resolve_source(state, req)?;
+    // 結果をデータセットとして保存する場合は元の全列が要る。
+    // 保存しないなら特徴量の列だけ読めばよい(メモリのピークを下げる)
+    let result = if save_as.trim().is_empty() {
+        resolve_source_cols(state, req, &features)?
+    } else {
+        resolve_source(state, req)?
+    };
     let fis: Vec<usize> = features
         .iter()
         .map(|f| col_index(&result, f))
@@ -954,7 +1007,7 @@ fn p0_of(req: &Json) -> BiResult<f64> {
 
 /// 検定候補の提案 (/api/analyze/advise)
 pub fn api_advise(state: &mut AppState, req: &Json) -> BiResult<Json> {
-    let result = resolve_source(state, req)?;
+    let result = resolve_source_cols(state, req, &test_cols(req))?;
     let mode = s(req, "mode");
     let rec =
         match mode.as_str() {
@@ -1175,7 +1228,7 @@ fn posthoc_pairs(
 
 /// 検定実行 (/api/analyze/test)
 pub fn api_test(state: &mut AppState, req: &Json) -> BiResult<Json> {
-    let result = resolve_source(state, req)?;
+    let result = resolve_source_cols(state, req, &test_cols(req))?;
     let alpha = alpha_of(req);
     let id = s(req, "test");
     if id.is_empty() {
@@ -1624,5 +1677,112 @@ mod tests {
         assert_eq!(r["dropped"], 1);
         assert_eq!(r["n_used"], 60);
         assert_eq!(r["ks"].as_array().unwrap().len(), 10);
+    }
+
+    // ---------- 列の射影(必要な列だけ読む) ----------
+
+    /// 使わない列が多くても結果は変わらず、列名エラーのメッセージも維持される。
+    /// (射影はメモリ削減のための最適化であり、出力を変えてはいけない)
+    #[test]
+    fn test_projection_keeps_results_and_errors() {
+        // x,value 以外にダミー列を4つ持つデータセット
+        let cols: &[(&str, DataType)] = &[
+            ("t", DataType::Utf8),
+            ("noise1", DataType::Utf8),
+            ("v", DataType::Float64),
+            ("noise2", DataType::Int64),
+            ("noise3", DataType::Utf8),
+        ];
+        let rows: Vec<Vec<Value>> = (0..20)
+            .map(|i| {
+                let v = if i == 15 {
+                    20.0
+                } else if i % 2 == 0 {
+                    9.5
+                } else {
+                    10.5
+                };
+                vec![
+                    Value::Text(format!("t{:02}", i + 1)),
+                    Value::Text("x".repeat(50)), // 射影されなければ重いだけの列
+                    Value::Float(v),
+                    Value::Int(i as i64),
+                    Value::Text("y".repeat(50)),
+                ]
+            })
+            .collect();
+        let mut st = state_with("proj", cols, rows);
+
+        let r = api_spc(
+            &mut st,
+            &json!({"source": ds("proj"), "x": "t", "value": "v", "agg": "avg"}),
+        )
+        .unwrap();
+        // 射影しない場合と同じ結果(外れ値をルール1で検出)
+        assert_eq!(r["n_used"], 20);
+        let viols = r["violations"].as_array().unwrap();
+        assert_eq!(viols.len(), 1);
+        assert_eq!(viols[0]["index"], 15);
+        assert_eq!(r["labels"][15], "t16");
+
+        // 存在しない列は射影のSQLエラーではなく、分かりやすいメッセージにする
+        let e = api_spc(
+            &mut st,
+            &json!({"source": ds("proj"), "x": "nope", "value": "v"}),
+        )
+        .unwrap_err();
+        assert!(e.contains("見つかりません"), "{e}");
+
+        // SQLソース経由でも射影が効く(サブクエリとして包む)
+        let r2 = api_tooldiff(
+            &mut st,
+            &json!({
+                "source": {"kind": "sql", "sql": "SELECT * FROM proj"},
+                "group": "noise3", "value": "v"
+            }),
+        );
+        // 群が1つしかないためエラーになるが、列解決までは通っていること
+        assert!(r2.unwrap_err().contains("2つ未満"));
+    }
+
+    /// クラスタリングは結果を保存するとき元の全列が必要なので射影しない
+    #[test]
+    fn test_cluster_save_keeps_all_columns() {
+        let cols: &[(&str, DataType)] = &[
+            ("id", DataType::Utf8),
+            ("f1", DataType::Float64),
+            ("f2", DataType::Float64),
+            ("memo", DataType::Utf8),
+        ];
+        let rows: Vec<Vec<Value>> = (0..30)
+            .map(|i| {
+                let off = (i % 3) as f64 * 100.0;
+                vec![
+                    Value::Text(format!("id{i}")),
+                    Value::Float(off + (i / 3) as f64 * 0.1),
+                    Value::Float(off - (i / 3) as f64 * 0.1),
+                    Value::Text(format!("memo{i}")),
+                ]
+            })
+            .collect();
+        let mut st = state_with("cl", cols, rows);
+
+        let r = api_cluster(
+            &mut st,
+            &json!({"source": ds("cl"), "features": ["f1", "f2"], "k": 3, "save_as": "cl_out"}),
+        )
+        .unwrap();
+        assert_eq!(r["saved"]["rows"], 30);
+        // 保存されたデータセットは 元の全列 + cluster 列
+        let saved = st.datasets.iter().find(|d| d.name == "cl_out").unwrap();
+        let names: Vec<String> = saved
+            .schema
+            .as_ref()
+            .unwrap()
+            .columns
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        assert_eq!(names, vec!["id", "f1", "f2", "memo", "cluster"]);
     }
 }
