@@ -187,6 +187,12 @@ kohaku.registerChartType({
   `shared = { facetValue, allRows }` を受け取る — `allRows` は全パネル分の行で、
   スケールをパネル間で共有するための基準(ウェハーマップは座標範囲とカラースケールをここから計算)。
   `buildQuery` はファセット列を `f` として SELECT に含める(本体の分割処理は `f` 列を見る)
+- **`fetch` フックを使うチャートのファセット**: `buildQuery` を使うチャートは本体が結果の `f` 列で分割するが、
+  `fetch` チャートは結果が行の集合ではないため分割できない。この場合は `fetch` 自身が
+  グループ別実行API(`/api/analyze/group`)を呼び、`{group, groups: [{value, result|error}], truncated, total, shown}`
+  を返す。本体は結果に `groups` 配列があればそれをパネル列として描く(SPC管理図が最初の利用者)。
+  パネル間で共有するスケールは `shared.allResults`(成功したグループの結果の配列)から render 側が求める。
+  `error` を持つグループはそのパネルにだけエラー文言を描く(1グループの失敗で全体を消さない)
 - **凡例(カラースケール等)は `renderLegend(ctx, w, h, spec, result, helpers)` + `legendWidth` で宣言する**。
   本体が格子の外側(最上段の右端パネルの右隣)に領域を確保して1回だけ呼ぶ。
   パネル内に描くと、そのパネルだけ余白が変わってマップの大きさと位置が揃わなくなる

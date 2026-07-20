@@ -797,11 +797,27 @@ function renderChart(canvas, spec, result) {
   const { ctx, w, h } = setupCanvas(canvas);
   const reg = CHART_REGISTRY.get(spec.chart_type);
   if (reg) {
-    // form.facet を宣言した登録チャートはファセット分割に乗せる(ウェハーマップ等)
-    const fciReg = result.columns.indexOf("f");
-    if (spec.facet && fciReg >= 0 && reg.form && reg.form.facet) {
-      renderFacets(ctx, w, h, spec, result, fciReg, reg);
-      return;
+    // form.facet を宣言した登録チャートはファセット分割に乗せる
+    if (spec.facet && reg.form && reg.form.facet) {
+      if (Array.isArray(result.groups)) {
+        // fetch チャート: 分割はサーバー側(/api/analyze/group)で済んでいる。
+        // グループごとの成否がそのままパネルの成否になる(SPC管理図)
+        const notes = result.truncated
+          ? [`${result.group}: ${result.total}件中 先頭${result.shown}件を表示`]
+          : [];
+        renderRegistryFacets(
+          ctx, w, h, spec, reg,
+          result.groups.map((g) => ({ name: `${result.group} = ${g.value}`, result: g.result, error: g.error })),
+          { allResults: result.groups.filter((g) => g.result).map((g) => g.result) },
+          notes,
+        );
+        return;
+      }
+      const fciReg = result.columns.indexOf("f");
+      if (fciReg >= 0) {
+        renderFacets(ctx, w, h, spec, result, fciReg, reg);
+        return;
+      }
     }
     reg.render(ctx, w, h, spec, result, CHART_HELPERS);
     return;
@@ -927,15 +943,23 @@ function renderFacets(ctx, w, h, spec, result, fi, reg) {
     }
   }
 
+  if (reg) {
+    // 登録チャートは共通のパネル描画に委譲する(スケール共有は render 側が
+    // shared.allRows から行う)
+    renderRegistryFacets(
+      ctx, w, h, specShared, reg,
+      shown.map((name) => ({ name, result: { columns: result.columns, rows: byFacet.get(name) } })),
+      { allRows: result.rows, legendResult: result },
+      notes,
+    );
+    return;
+  }
+
   // 格子レイアウト(件数から列数を決める)
   const n = shown.length;
-  const cols = n <= 2 ? n : n <= 4 ? 2 : n <= 9 ? 3 : n <= 16 ? 4 : 5;
+  const cols = facetCols(n);
   const gridRows = Math.ceil(n / cols);
-  // 凡例(カラースケール等)を持つ登録チャートは、格子の外側右に領域を確保する。
-  // パネル内に描くと1枚だけ余白が変わり、マップの大きさと位置が揃わなくなる
-  const legendW = reg && reg.renderLegend ? reg.legendWidth || 76 : 0;
-  const gw = w - legendW;
-  const cw = gw / cols;
+  const cw = w / cols;
   const chh = h / gridRows;
   shown.forEach((name, i) => {
     ctx.save();
@@ -943,22 +967,62 @@ function renderFacets(ctx, w, h, spec, result, fi, reg) {
     ctx.beginPath();
     ctx.rect(0, 0, cw, chh);
     ctx.clip();
-    const cellResult = { columns: result.columns, rows: byFacet.get(name) };
-    if (reg) {
-      // 登録チャート: ファセット名を上部に描き、残りの領域を render に渡す。
-      // shared.allRows で全ファセットの行を渡し、スケールの共有は render 側が行う
-      ctx.fillStyle = CHART_COLORS.text;
+    drawChartArea(ctx, cw, chh, specShared, { columns: result.columns, rows: byFacet.get(name) }, name, shared);
+    ctx.restore();
+  });
+  if (notes.length) {
+    ctx.fillStyle = CHART_COLORS.text;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "top";
+    ctx.fillText(notes.join(" / "), w - 4, 2);
+  }
+}
+
+/** パネル数から格子の列数を決める(25枚=1ロットが5×5に収まるように) */
+function facetCols(n) {
+  return n <= 2 ? n : n <= 4 ? 2 : n <= 9 ? 3 : n <= 16 ? 4 : 5;
+}
+
+/** 登録チャートのファセット描画。1パネル分の結果は呼び出し側が用意する
+ *  (SQLチャートは f 列で分割、fetch チャートはサーバーのグループ別実行の
+ *  結果をそのまま使う)。パネル間のスケール共有は shared 経由で render 側が行う。 */
+function renderRegistryFacets(ctx, w, h, spec, reg, panels, shared, notes) {
+  if (!panels.length) {
+    ctx.fillStyle = CHART_COLORS.text;
+    ctx.textAlign = "center";
+    ctx.fillText("データがありません", w / 2, h / 2);
+    return;
+  }
+  const cols = facetCols(panels.length);
+  const gridRows = Math.ceil(panels.length / cols);
+  // 凡例(カラースケール等)を持つ登録チャートは、格子の外側右に領域を確保する。
+  // パネル内に描くと1枚だけ余白が変わり、大きさと位置が揃わなくなる
+  const legendW = reg.renderLegend && shared.legendResult ? reg.legendWidth || 76 : 0;
+  const gw = w - legendW;
+  const cw = gw / cols;
+  const chh = h / gridRows;
+  panels.forEach((p, i) => {
+    ctx.save();
+    ctx.translate((i % cols) * cw, Math.floor(i / cols) * chh);
+    ctx.beginPath();
+    ctx.rect(0, 0, cw, chh);
+    ctx.clip();
+    ctx.fillStyle = CHART_COLORS.text;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillText(p.name.length > 24 ? p.name.slice(0, 24) + "…" : p.name, cw / 2, 2);
+    ctx.translate(0, FACET_TITLE_H);
+    if (p.error) {
+      // 1パネルの失敗で他を消さない(サーバー側も止めずに返している)
+      ctx.fillStyle = CHART_COLORS.danger;
       ctx.textAlign = "center";
-      ctx.textBaseline = "top";
-      const tl = name.length > 24 ? name.slice(0, 24) + "…" : name;
-      ctx.fillText(tl, cw / 2, 2);
-      ctx.translate(0, FACET_TITLE_H);
-      reg.render(ctx, cw, chh - FACET_TITLE_H, specShared, cellResult, CHART_HELPERS, {
-        facetValue: name,
-        allRows: result.rows,
-      });
+      ctx.textBaseline = "middle";
+      wrapText(ctx, p.error, cw / 2, (chh - FACET_TITLE_H) / 2, cw - 16, 14);
     } else {
-      drawChartArea(ctx, cw, chh, specShared, cellResult, name, shared);
+      reg.render(ctx, cw, chh - FACET_TITLE_H, spec, p.result, CHART_HELPERS, {
+        facetValue: p.name,
+        ...shared,
+      });
     }
     ctx.restore();
   });
@@ -966,15 +1030,32 @@ function renderFacets(ctx, w, h, spec, result, fi, reg) {
     // 凡例は最上段の右端パネルの右隣(格子の外側)に置く
     ctx.save();
     ctx.translate(gw, FACET_TITLE_H);
-    reg.renderLegend(ctx, legendW, chh - FACET_TITLE_H, specShared, result, CHART_HELPERS);
+    reg.renderLegend(ctx, legendW, chh - FACET_TITLE_H, spec, shared.legendResult, CHART_HELPERS);
     ctx.restore();
   }
-  if (notes.length) {
+  if (notes && notes.length) {
     ctx.fillStyle = CHART_COLORS.text;
     ctx.textAlign = "right";
     ctx.textBaseline = "top";
     ctx.fillText(notes.join(" / "), gw - 4, 2);
   }
+}
+
+/** Canvasに折り返しでテキストを描く(パネル内のエラー表示用) */
+function wrapText(ctx, text, cx, cy, maxW, lineH) {
+  const lines = [];
+  let cur = "";
+  for (const ch of text) {
+    if (ctx.measureText(cur + ch).width > maxW && cur) {
+      lines.push(cur);
+      cur = ch;
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur) lines.push(cur);
+  const top = cy - ((lines.length - 1) * lineH) / 2;
+  lines.forEach((l, i) => ctx.fillText(l, cx, top + i * lineH));
 }
 
 /** 1つのチャートを (0,0)〜(w,h) に描く。title はファセット名(ファセット時のみ)、
@@ -1502,23 +1583,32 @@ kohaku.registerChartType({
 kohaku.registerChartType({
   type: "spc",
   label: "SPC管理図",
-  form: { x: "時間/順序列", value: "測定値", agg: true, yrange: true },
+  form: { x: "時間/順序列", value: "測定値", agg: true, yrange: true, facet: true },
   async fetch(spec, base) {
     if (!spec.value) throw new Error("測定値の列を指定してください");
-    return api("/api/analyze/spc", {
+    const req = {
       source: { kind: "sql", sql: base },
       x: spec.x,
       value: spec.value,
       // 同一時点の複数測定はサブグループとして平均が既定(合計のみ明示指定)
       agg: spec.agg === "sum" ? "sum" : "avg",
-    });
+    };
+    // 分割指定時はグループ別実行API(装置ごとに管理限界を引き直して一括作図)。
+    // 絞り込みも各グループの計算もRust側で行う(設計Rule 1)
+    if (spec.facet) return api("/api/analyze/group", { ...req, analysis: "spc", group: spec.facet });
+    return api("/api/analyze/spc", req);
   },
-  render(ctx, w, h, spec, r, H) {
+  render(ctx, w, h, spec, r, H, shared) {
     const n = r.values.length;
     const m = { l: 60, r: 52, t: 16, b: 40 };
     const pw = w - m.l - m.r;
     const ph = h - m.t - m.b;
-    const auto = H.niceTicks(Math.min(r.lcl, ...r.values), Math.max(r.ucl, ...r.values), 5);
+    // ファセット時はY軸レンジを全パネルで共有する(装置ごとの水準差を
+    // 見比べられるようにするため。管理限界は各パネル自身の値で描く)
+    const basis = shared && shared.allResults ? shared.allResults : [r];
+    const lo = Math.min(...basis.map((x) => Math.min(x.lcl, ...x.values)));
+    const hi = Math.max(...basis.map((x) => Math.max(x.ucl, ...x.values)));
+    const auto = H.niceTicks(lo, hi, 5);
     const range = H.applyManualRange(spec, auto, 5);
     const yTicks = range.ticks;
     const yMin = range.min;
@@ -1581,10 +1671,12 @@ kohaku.registerChartType({
     });
     ctx.restore();
 
-    // X軸ラベル(数個に間引き)
+    // X軸ラベル(数個に間引き)。本数はパネル幅に実際に収まる数まで減らす
+    // (ファセットでパネルが狭くなるとラベル同士が重なるため)
     ctx.fillStyle = H.colors.text;
     ctx.textAlign = "center";
-    const nt = Math.min(6, n);
+    const labelW = Math.max(...r.labels.map((l) => ctx.measureText(String(l)).width));
+    const nt = Math.min(6, Math.max(1, Math.floor(pw / (labelW + 12))), n);
     for (let t = 0; t < nt; t++) {
       const i = Math.round((t / Math.max(1, nt - 1)) * (n - 1));
       ctx.fillText(String(r.labels[i]), px(i), m.t + ph + 16);
