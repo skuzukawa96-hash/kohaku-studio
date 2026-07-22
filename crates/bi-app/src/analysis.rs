@@ -557,6 +557,19 @@ pub fn api_spc(state: &mut AppState, req: &Json) -> BiResult<Json> {
 
 /// 一度に実行するグループ数の上限(チャートのファセットと揃える)
 const GROUP_MAX: usize = 12;
+/// 2次元グループ(行×列)のときのペア数上限。UI側は各次元6まで表示する
+const GROUP2_MAX: usize = 36;
+
+/// グループ値を SQL リテラルと表示ラベルに変換する(NULLは None)
+fn group_literal(v: &Value) -> Option<(String, String)> {
+    match v {
+        Value::Int(n) => Some((n.to_string(), n.to_string())),
+        Value::Float(f) => Some((f.to_string(), f.to_string())),
+        Value::Bool(b) => Some((b.to_string(), (*b as i64).to_string())),
+        Value::Text(t) => Some((t.clone(), format!("'{}'", t.replace('\'', "''")))),
+        Value::Null => None,
+    }
+}
 
 /// グループ列の値ごとにソースを絞り込み、既存の分析APIをそのまま呼んで
 /// 結果を並べて返す。分析側のコードには手を入れないため、返る結果の形は
@@ -596,19 +609,37 @@ pub fn api_group(state: &mut AppState, req: &Json) -> BiResult<Json> {
 
     let base = source_sql(req)?;
     let ident = format!("\"{}\"", group.replace('"', "\"\""));
-    // グループ値の列挙(NULLは対象外)。上限+1件取って打ち切りを検出する
+    // 第2グループ(任意)。指定時は (group, group2) のペアごとに実行する
+    // ＝チャートの2次元ファセット(行×列)の分析版
+    let group2 = s(req, "group2");
+    let ident2 = (!group2.is_empty()).then(|| format!("\"{}\"", group2.replace('"', "\"\"")));
+
+    // グループ値(または値のペア)の列挙。NULLは対象外。上限+1件取って打ち切りを検出する
+    let (sel, cond, cap) = match &ident2 {
+        Some(id2) => (
+            format!("{ident}, {id2}"),
+            format!("{ident} IS NOT NULL AND {id2} IS NOT NULL"),
+            GROUP2_MAX,
+        ),
+        None => (ident.clone(), format!("{ident} IS NOT NULL"), GROUP_MAX),
+    };
     let listed = state.engine.query(
-        &format!("SELECT DISTINCT {ident} FROM ({base}) WHERE {ident} IS NOT NULL ORDER BY 1"),
-        GROUP_MAX + 1,
+        &format!("SELECT DISTINCT {sel} FROM ({base}) WHERE {cond} ORDER BY {sel}"),
+        cap + 1,
     )?;
     if listed.rows.is_empty() {
-        return Err(format!("列「{group}」に値がありません"));
+        let cols = if ident2.is_some() {
+            format!("列「{group}」「{group2}」")
+        } else {
+            format!("列「{group}」")
+        };
+        return Err(format!("{cols}に値がありません"));
     }
-    let truncated = listed.rows.len() > GROUP_MAX;
+    let truncated = listed.rows.len() > cap;
     // 打ち切った場合だけ実数を数え直す(数えていない値を報告しないため)
     let total = if truncated {
         let c = state.engine.query(
-            &format!("SELECT COUNT(DISTINCT {ident}) FROM ({base}) WHERE {ident} IS NOT NULL"),
+            &format!("SELECT COUNT(*) FROM (SELECT DISTINCT {sel} FROM ({base}) WHERE {cond})"),
             1,
         )?;
         match c.rows.first().and_then(|r| r.first()) {
@@ -620,33 +651,44 @@ pub fn api_group(state: &mut AppState, req: &Json) -> BiResult<Json> {
     };
 
     let mut groups = Vec::new();
-    for row in listed.rows.iter().take(GROUP_MAX) {
-        let (label, lit) = match &row[0] {
-            Value::Int(n) => (n.to_string(), n.to_string()),
-            Value::Float(f) => (f.to_string(), f.to_string()),
-            Value::Bool(b) => (b.to_string(), (*b as i64).to_string()),
-            Value::Text(t) => (t.clone(), format!("'{}'", t.replace('\'', "''"))),
-            Value::Null => continue,
+    for row in listed.rows.iter().take(cap) {
+        let Some((label, lit)) = group_literal(&row[0]) else {
+            continue;
+        };
+        let mut item = json!({ "value": label });
+        let where_clause = if let Some(id2) = &ident2 {
+            let Some((label2, lit2)) = row.get(1).and_then(group_literal) else {
+                continue;
+            };
+            item["value2"] = json!(label2);
+            format!("{ident} = {lit} AND {id2} = {lit2}")
+        } else {
+            format!("{ident} = {lit}")
         };
         let mut sub = req.clone();
         sub["source"] = json!({
             "kind": "sql",
-            "sql": format!("SELECT * FROM ({base}) WHERE {ident} = {lit}"),
+            "sql": format!("SELECT * FROM ({base}) WHERE {where_clause}"),
         });
         match run(state, &sub) {
-            Ok(r) => groups.push(json!({"value": label, "result": r})),
-            Err(e) => groups.push(json!({"value": label, "error": e})),
+            Ok(r) => item["result"] = r,
+            Err(e) => item["error"] = json!(e),
         }
+        groups.push(item);
     }
 
-    Ok(json!({
+    let mut out = json!({
         "analysis": analysis,
         "group": group,
         "groups": groups,
         "total": total,
         "shown": groups.len(),
         "truncated": truncated,
-    }))
+    });
+    if !group2.is_empty() {
+        out["group2"] = json!(group2);
+    }
+    Ok(out)
 }
 
 // ---------- ロットトレース ----------
@@ -1869,6 +1911,70 @@ mod tests {
         assert_eq!(r["shown"], GROUP_MAX);
         assert_eq!(r["total"], 20); // 上限より多くても実数を報告する
         assert_eq!(r["groups"].as_array().unwrap().len(), GROUP_MAX);
+    }
+
+    /// 第2グループを指定すると (group, group2) のペアごとに実行され、
+    /// 各グループが両方の値で絞り込まれる(2次元ファセットの分析版)
+    #[test]
+    fn test_group_two_dimensional() {
+        // tool(A,B) × step(1,2) の4組。値は組ごとに変えて絞り込みを確認する
+        let mut rows: Vec<Vec<Value>> = Vec::new();
+        for tool in ["A", "B"] {
+            for step in [1i64, 2] {
+                let center = match (tool, step) {
+                    ("A", 1) => 10.0,
+                    ("A", 2) => 20.0,
+                    ("B", 1) => 30.0,
+                    _ => 40.0,
+                };
+                for i in 0..12 {
+                    rows.push(vec![
+                        Value::Text(tool.into()),
+                        Value::Int(step),
+                        Value::Text(format!("lot{i:02}")),
+                        Value::Float(center + if i % 2 == 0 { -0.5 } else { 0.5 }),
+                    ]);
+                }
+            }
+        }
+        let mut st = state_with(
+            "g2d",
+            &[
+                ("tool", DataType::Utf8),
+                ("step", DataType::Int64),
+                ("lot", DataType::Utf8),
+                ("v", DataType::Float64),
+            ],
+            rows,
+        );
+        let r = api_group(
+            &mut st,
+            &json!({"analysis": "spc", "group": "tool", "group2": "step",
+                    "source": ds("g2d"), "x": "lot", "value": "v"}),
+        )
+        .unwrap();
+
+        assert_eq!(r["group"], "tool");
+        assert_eq!(r["group2"], "step");
+        let gs = r["groups"].as_array().unwrap();
+        assert_eq!(gs.len(), 4); // 2×2 の組
+                                 // 各ペアが両方の値で絞られ、中心線がその組の値になる
+        let by_pair: std::collections::HashMap<(String, String), f64> = gs
+            .iter()
+            .map(|g| {
+                (
+                    (
+                        g["value"].as_str().unwrap().to_string(),
+                        g["value2"].as_str().unwrap().to_string(),
+                    ),
+                    g["result"]["center"].as_f64().unwrap(),
+                )
+            })
+            .collect();
+        assert!((by_pair[&("A".into(), "1".into())] - 10.0).abs() < 0.01);
+        assert!((by_pair[&("A".into(), "2".into())] - 20.0).abs() < 0.01);
+        assert!((by_pair[&("B".into(), "1".into())] - 30.0).abs() < 0.01);
+        assert!((by_pair[&("B".into(), "2".into())] - 40.0).abs() < 0.01);
     }
 
     #[test]

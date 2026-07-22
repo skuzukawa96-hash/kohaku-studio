@@ -425,6 +425,7 @@ function chartSpecFromForm() {
     value: $("ch-value").value,
     series: $("ch-series").value,
     facet: $("ch-facet").value,
+    facet2: $("ch-facet2").value,
     agg: $("ch-agg").value,
     bins: parseInt($("ch-bins").value, 10) || 20,
     // 軸の手動レンジ(空欄なら自動)
@@ -450,6 +451,8 @@ function loadChartToForm(spec) {
     $("ch-value").value = spec.value || "";
     $("ch-series").value = spec.series || "";
     $("ch-facet").value = spec.facet || "";
+    $("ch-facet2").value = spec.facet2 || "";
+    syncFacet2Enabled();
     $("ch-agg").value = spec.agg || "none";
     $("ch-bins").value = spec.bins || 20;
     $("ch-ymin").value = spec.y_min ?? "";
@@ -461,9 +464,16 @@ function loadChartToForm(spec) {
   renderChartList();
 }
 
+/** 行(facet2)は列(facet)を選んだときだけ使える(2つ目の分割軸のため)。
+ *  列が空なら行セレクタを無効化して、順序を明示する。 */
+function syncFacet2Enabled() {
+  $("ch-facet2").disabled = !$("ch-facet").value;
+}
+
 function updateChartFormVisibility() {
   const kind = $("ch-source-kind").value;
   const type = $("ch-type").value;
+  syncFacet2Enabled();
   $("ch-dataset-row").classList.toggle("hidden", kind !== "dataset");
   $("ch-sql-row").classList.toggle("hidden", kind !== "sql");
   const reg = CHART_REGISTRY.get(type);
@@ -482,6 +492,7 @@ function updateChartFormVisibility() {
     $("ch-yrange-row").classList.toggle("hidden", !f.yrange);
     $("ch-xrange-row").classList.toggle("hidden", !f.xrange);
     $("ch-facet-row").classList.toggle("hidden", !f.facet);
+    $("ch-facet2-row").classList.toggle("hidden", !f.facet);
     return;
   }
   $("ch-x-label").textContent = "X列";
@@ -492,6 +503,7 @@ function updateChartFormVisibility() {
   $("ch-x-row").classList.toggle("hidden", type === "table");
   $("ch-series-row").classList.toggle("hidden", type === "table");
   $("ch-facet-row").classList.toggle("hidden", type === "table");
+  $("ch-facet2-row").classList.toggle("hidden", type === "table");
   $("ch-agg-row").classList.toggle("hidden", type === "histogram" || type === "table" || type === "scatter");
   $("ch-yrange-row").classList.toggle("hidden", type === "table");
   // X軸の手動レンジは、X軸が数値になるグラフ(散布図・折れ線・ヒストグラム)でのみ意味を持つ
@@ -541,11 +553,11 @@ async function loadChartColumns() {
   } catch (e) {
     /* SQL未完成時は無視 */
   }
-  for (const id of ["ch-x", "ch-y", "ch-value", "ch-series", "ch-facet"]) {
+  for (const id of ["ch-x", "ch-y", "ch-value", "ch-series", "ch-facet", "ch-facet2"]) {
     const sel = $(id);
     const cur = sel.value;
     sel.innerHTML = "";
-    if (id === "ch-series" || id === "ch-facet") {
+    if (id === "ch-series" || id === "ch-facet" || id === "ch-facet2") {
       // 系列・ファセットは任意指定(既定はなし)
       const none = document.createElement("option");
       none.value = "";
@@ -560,6 +572,7 @@ async function loadChartColumns() {
     }
     if (cols.includes(cur)) sel.value = cur;
   }
+  syncFacet2Enabled();
 }
 
 /** SQLリテラル化(数値は素通し、文字列は''エスケープ) */
@@ -586,26 +599,32 @@ function buildChartQuery(spec, filters) {
   const x = qi(spec.x), y = qi(spec.y);
   // 系列列(任意)。指定時は s 列としてSELECTに含める
   const s = spec.series ? `, ${qi(spec.series)} AS s` : "";
-  // ファセット列(任意)。指定時は f 列としてSELECTに含める
+  // ファセット列(任意)。f=列(横に並べる) / f2=行(縦に並べる)
   const f = spec.facet ? `, ${qi(spec.facet)} AS f` : "";
+  const f2 = spec.facet && spec.facet2 ? `, ${qi(spec.facet2)} AS f2` : "";
   switch (spec.chart_type) {
     case "table":
       return `SELECT * FROM (${base}) LIMIT 500`;
     case "histogram":
-      return `SELECT ${x} AS x${s}${f} FROM (${base}) WHERE ${x} IS NOT NULL LIMIT 100000`;
+      return `SELECT ${x} AS x${s}${f}${f2} FROM (${base}) WHERE ${x} IS NOT NULL LIMIT 100000`;
     case "scatter":
-      return `SELECT ${x} AS x, ${y} AS y${s}${f} FROM (${base}) WHERE ${x} IS NOT NULL AND ${y} IS NOT NULL LIMIT 20000`;
+      return `SELECT ${x} AS x, ${y} AS y${s}${f}${f2} FROM (${base}) WHERE ${x} IS NOT NULL AND ${y} IS NOT NULL LIMIT 20000`;
     default: {
       if (spec.agg === "none") {
-        return `SELECT ${x} AS x, ${y} AS y${s}${f} FROM (${base}) LIMIT 20000`;
+        return `SELECT ${x} AS x, ${y} AS y${s}${f}${f2} FROM (${base}) LIMIT 20000`;
       }
       const agg = spec.agg === "count" ? "COUNT(*)" : `${spec.agg.toUpperCase()}(${y})`;
-      const grp = [x, spec.series ? qi(spec.series) : null, spec.facet ? qi(spec.facet) : null]
+      const grp = [
+        x,
+        spec.series ? qi(spec.series) : null,
+        spec.facet ? qi(spec.facet) : null,
+        spec.facet && spec.facet2 ? qi(spec.facet2) : null,
+      ]
         .filter(Boolean)
         .join(", ");
       // ファセット時はグループ数が増えるため上限を広げる
       const lim = spec.facet ? 12000 : 4000;
-      return `SELECT ${x} AS x, ${agg} AS y${s}${f} FROM (${base}) GROUP BY ${grp} ORDER BY ${x} LIMIT ${lim}`;
+      return `SELECT ${x} AS x, ${agg} AS y${s}${f}${f2} FROM (${base}) GROUP BY ${grp} ORDER BY ${x} LIMIT ${lim}`;
     }
   }
 }
@@ -807,12 +826,17 @@ function chartYLabel(spec) {
 function renderChart(canvas, spec, result) {
   const { ctx, w, h } = setupCanvas(canvas);
   const reg = CHART_REGISTRY.get(spec.chart_type);
+  const twoD = !!(spec.facet && spec.facet2);
   if (reg) {
     // form.facet を宣言した登録チャートはファセット分割に乗せる
     if (spec.facet && reg.form && reg.form.facet) {
       if (Array.isArray(result.groups)) {
         // fetch チャート: 分割はサーバー側(/api/analyze/group)で済んでいる。
         // グループごとの成否がそのままパネルの成否になる(SPC管理図)
+        if (twoD && result.group2) {
+          renderFetchFacetGrid(ctx, w, h, spec, reg, result);
+          return;
+        }
         const notes = result.truncated
           ? [`${result.group}: ${result.total}件中 先頭${result.shown}件を表示`]
           : [];
@@ -826,6 +850,10 @@ function renderChart(canvas, spec, result) {
       }
       const fciReg = result.columns.indexOf("f");
       if (fciReg >= 0) {
+        if (twoD && result.columns.indexOf("f2") >= 0) {
+          renderSqlFacetGrid(ctx, w, h, spec, result, reg);
+          return;
+        }
         renderFacets(ctx, w, h, spec, result, fciReg, reg);
         return;
       }
@@ -843,6 +871,10 @@ function renderChart(canvas, spec, result) {
   // ファセット分割(f列があれば、値ごとに小さなチャートを格子状に描く)
   const fci = result.columns.indexOf("f");
   if (spec.facet && fci >= 0) {
+    if (twoD && result.columns.indexOf("f2") >= 0) {
+      renderSqlFacetGrid(ctx, w, h, spec, result, null);
+      return;
+    }
     renderFacets(ctx, w, h, spec, result, fci, null);
     return;
   }
@@ -863,6 +895,256 @@ const FACET_ROW_GAP = 8;
 function resetTextState(ctx) {
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
+}
+
+/** 2次元ファセットで各軸に表示するカテゴリ数の上限(6×6=36セルまで) */
+const FACET2_DIM_MAX = 6;
+
+/** ファセットのセル間で共有するスケールを求める(1次元・2次元で共通)。
+ *  cellArrays: 各セルの行配列の配列(ヒストグラムの度数軸を揃えるのに使う)。
+ *  Y軸レンジ・ヒストグラムのビン区切りと度数軸・系列の色順をセル間で揃える
+ *  (揃えないとパネル同士を見比べられないため)。
+ *  戻り値: {shared, specShared, notes}。登録チャートのスケール共有は
+ *  render 側が shared.allRows / allResults から行うので、ここでは扱わない。 */
+function computeFacetShared(spec, result, reg, cellArrays) {
+  const shared = {};
+  const specShared = { ...spec };
+  const notes = [];
+  const xi = result.columns.indexOf("x");
+  // 系列の色と凡例の並びをセル間で固定する
+  // (セルごとに出現順で色を割ると、同じ系列が別の色になってしまう)
+  const si = reg ? -1 : result.columns.indexOf("s");
+  if (si >= 0) {
+    const order = [];
+    for (const r of result.rows) {
+      const n = r[si] === null ? "(null)" : String(r[si]);
+      if (!order.includes(n)) order.push(n);
+    }
+    if (order.length > 8) notes.push(`${order.length}系列中 先頭8系列を表示`);
+    shared.seriesOrder = order.slice(0, 8);
+  }
+  if (reg) {
+    // 登録チャートのスケール共有は render 側が行う
+  } else if (spec.chart_type === "histogram") {
+    const vals = result.rows.map((r) => Number(r[xi])).filter((v) => isFinite(v));
+    if (vals.length) {
+      const lo = Math.min(...vals);
+      const hi = Math.max(...vals);
+      shared.histRange = [lo, hi]; // ビンの区切りも全セルで共有
+      if (numOrNull(spec.y_min) === null && numOrNull(spec.y_max) === null) {
+        // 共有ビンで各セルの最大度数を求め、度数軸も揃える
+        const nb = Math.max(2, Math.min(200, spec.bins || 20));
+        const width = hi - lo || 1;
+        let peak = 1;
+        for (const rows of cellArrays) {
+          const counts = new Array(nb).fill(0);
+          for (const r of rows) {
+            const v = Number(r[xi]);
+            if (!isFinite(v)) continue;
+            let b = Math.floor(((v - lo) / width) * nb);
+            if (b >= nb) b = nb - 1;
+            peak = Math.max(peak, ++counts[b]);
+          }
+        }
+        const t = niceTicks(0, peak, 5);
+        specShared.y_min = String(t[0]);
+        specShared.y_max = String(t[t.length - 1]);
+      }
+    }
+  } else if (numOrNull(spec.y_min) === null && numOrNull(spec.y_max) === null) {
+    const yi = result.columns.indexOf("y");
+    let gmin = Infinity;
+    let gmax = -Infinity;
+    if (yi >= 0) {
+      for (const r of result.rows) {
+        const v = Number(r[yi]);
+        if (isFinite(v)) {
+          gmin = Math.min(gmin, v);
+          gmax = Math.max(gmax, v);
+        }
+      }
+    }
+    if (isFinite(gmin)) {
+      if (spec.chart_type === "bar") {
+        gmin = Math.min(0, gmin); // 棒グラフは0基点を維持する
+        gmax = Math.max(0, gmax);
+      }
+      const t = niceTicks(gmin, gmax, 5);
+      specShared.y_min = String(t[0]);
+      specShared.y_max = String(t[t.length - 1]);
+    }
+  }
+  return { shared, specShared, notes };
+}
+
+/** 空のセル(その行×列の組にデータがない)を控えめに示す */
+function emptyFacetCell(ctx, cw, chh) {
+  ctx.fillStyle = CHART_COLORS.muted;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("データなし", cw / 2, chh / 2);
+}
+
+/** 短縮表示 */
+function ellipsize(s, n) {
+  return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+/** 2次元ファセット(行×列)の格子レイアウト。列見出しを上、行見出しを左に置き、
+ *  同じ列は縦に、同じ行は横に揃うので2つのカテゴリを同時に見比べられる。
+ *  各セルは drawCell(ctx, cw, chh, colKey, rowKey) が描く。 */
+function renderFacetGrid(ctx, w, h, colKeys, rowKeys, colVar, rowVar, drawCell, opts) {
+  opts = opts || {};
+  const legend = opts.legend;
+  const legendW = legend ? legend.width : 0;
+  const ncols = colKeys.length, nrows = rowKeys.length;
+  if (!ncols || !nrows) {
+    ctx.fillStyle = CHART_COLORS.text;
+    ctx.textAlign = "center";
+    ctx.fillText("データがありません", w / 2, h / 2);
+    return;
+  }
+  // 左の行見出し帯の幅は最長ラベルから決める(40〜120)
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  const rowLabelW = Math.min(120, Math.max(40, ...rowKeys.map((k) => ctx.measureText(ellipsize(k, 16)).width + 10)));
+  const CAP_H = 15; // 「列=… × 行=…」のキャプション帯
+  const HEAD_H = FACET_TITLE_H; // 列見出し帯
+  const topStrip = CAP_H + HEAD_H;
+  const gridX = FACET_PAD + rowLabelW;
+  const gridY = topStrip + FACET_PAD;
+  const gridW = w - gridX - legendW - FACET_PAD;
+  const gridH = h - gridY - FACET_PAD;
+  const cw = gridW / ncols;
+  const chh = (gridH - FACET_ROW_GAP * (nrows - 1)) / nrows;
+
+  // どちらの列がどの軸かをキャプションで明示(見出しは値だけにして簡潔に)
+  ctx.fillStyle = CHART_COLORS.muted;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillText(`列(横)= ${ellipsize(colVar, 16)}   行(縦)= ${ellipsize(rowVar, 16)}`, 2, 1);
+  if (opts.notes && opts.notes.length) {
+    ctx.textAlign = "right";
+    ctx.fillText(opts.notes.join(" / "), w - legendW - 2, 1);
+  }
+
+  // 列見出し(上)
+  ctx.fillStyle = CHART_COLORS.text;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  colKeys.forEach((c, ci) => ctx.fillText(ellipsize(c, 16), gridX + (ci + 0.5) * cw, CAP_H + 1));
+
+  // 行見出し(左) + 各セル
+  rowKeys.forEach((rk, ri) => {
+    const cy = gridY + ri * (chh + FACET_ROW_GAP);
+    ctx.fillStyle = CHART_COLORS.text;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(ellipsize(rk, 16), 2, cy + chh / 2);
+    colKeys.forEach((ck, ci) => {
+      ctx.save();
+      ctx.translate(gridX + ci * cw, cy);
+      ctx.beginPath();
+      ctx.rect(0, 0, cw, chh);
+      ctx.clip();
+      resetTextState(ctx);
+      drawCell(ctx, cw, chh, ck, rk);
+      ctx.restore();
+    });
+  });
+
+  // 凡例(格子の外側右。最上段の高さに合わせる)
+  if (legend) {
+    ctx.save();
+    ctx.translate(w - legendW, gridY);
+    resetTextState(ctx);
+    legend.draw(ctx, legendW, chh);
+    ctx.restore();
+  }
+}
+
+/** 2つの値を格子のキーに合成する(区切りに制御文字を使い衝突を避ける) */
+function cellKey(col, row) {
+  return `${col} ${row}`;
+}
+
+/** 上限を超えたカテゴリを先頭 max 件に絞り、必要なら注記を返す */
+function capDim(keys, max, varName) {
+  if (keys.length <= max) return { keys, note: null };
+  return { keys: keys.slice(0, max), note: `${varName}: ${keys.length}件中 先頭${max}件を表示` };
+}
+
+/** SQL派生(f/f2列)の2次元ファセット。組み込みチャートとウェハーマップで共通。 */
+function renderSqlFacetGrid(ctx, w, h, spec, result, reg) {
+  const fi = result.columns.indexOf("f");
+  const f2i = result.columns.indexOf("f2");
+  const colKeys = [], rowKeys = [], byCell = new Map();
+  for (const r of result.rows) {
+    const col = r[fi] === null ? "(null)" : String(r[fi]);
+    const row = r[f2i] === null ? "(null)" : String(r[f2i]);
+    if (!colKeys.includes(col)) colKeys.push(col);
+    if (!rowKeys.includes(row)) rowKeys.push(row);
+    const k = cellKey(col, row);
+    if (!byCell.has(k)) byCell.set(k, []);
+    byCell.get(k).push(r);
+  }
+  const cCap = capDim(colKeys, FACET2_DIM_MAX, spec.facet);
+  const rCap = capDim(rowKeys, FACET2_DIM_MAX, spec.facet2);
+  const notes = [cCap.note, rCap.note].filter(Boolean);
+  const cellArrays = [];
+  for (const c of cCap.keys) for (const r of rCap.keys) {
+    const a = byCell.get(cellKey(c, r));
+    if (a) cellArrays.push(a);
+  }
+  const { shared, specShared, notes: sn } = computeFacetShared(spec, result, reg, cellArrays);
+  notes.push(...sn);
+  const drawCell = (ctx, cw, chh, col, row) => {
+    const rows = byCell.get(cellKey(col, row));
+    if (!rows) return emptyFacetCell(ctx, cw, chh);
+    if (reg) {
+      reg.render(ctx, cw, chh, specShared, { columns: result.columns, rows }, CHART_HELPERS, {
+        facetValue: `${col} / ${row}`,
+        allRows: result.rows,
+      });
+    } else {
+      drawChartArea(ctx, cw, chh, specShared, { columns: result.columns, rows }, null, shared);
+    }
+  };
+  const legend = reg && reg.renderLegend
+    ? { width: reg.legendWidth || 76, draw: (c, lw, lh) => reg.renderLegend(c, lw, lh, specShared, result, CHART_HELPERS) }
+    : null;
+  renderFacetGrid(ctx, w, h, cCap.keys, rCap.keys, spec.facet, spec.facet2, drawCell, { legend, notes });
+}
+
+/** fetch派生(グループ別実行API)の2次元ファセット。SPC管理図が利用。 */
+function renderFetchFacetGrid(ctx, w, h, spec, reg, result) {
+  const colKeys = [], rowKeys = [], byCell = new Map();
+  for (const g of result.groups) {
+    const col = String(g.value), row = String(g.value2);
+    if (!colKeys.includes(col)) colKeys.push(col);
+    if (!rowKeys.includes(row)) rowKeys.push(row);
+    byCell.set(cellKey(col, row), g);
+  }
+  const cCap = capDim(colKeys, FACET2_DIM_MAX, result.group);
+  const rCap = capDim(rowKeys, FACET2_DIM_MAX, result.group2);
+  const notes = [cCap.note, rCap.note].filter(Boolean);
+  if (result.truncated) {
+    notes.push(`${result.group}×${result.group2}: ${result.total}組中 先頭${result.shown}組を実行`);
+  }
+  const allResults = result.groups.filter((g) => g.result).map((g) => g.result);
+  const drawCell = (ctx, cw, chh, col, row) => {
+    const g = byCell.get(cellKey(col, row));
+    if (!g) return emptyFacetCell(ctx, cw, chh);
+    if (g.error) {
+      ctx.fillStyle = CHART_COLORS.danger;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      wrapText(ctx, g.error, cw / 2, chh / 2, cw - 12, 14);
+      return;
+    }
+    reg.render(ctx, cw, chh, spec, g.result, CHART_HELPERS, { facetValue: `${col} / ${row}`, allResults });
+  };
+  renderFacetGrid(ctx, w, h, cCap.keys, rCap.keys, result.group, result.group2, drawCell, { notes });
 }
 
 /** ファセット表示(seabornのFacetGrid相当)。指定列の値ごとにデータを分け、
@@ -895,77 +1177,9 @@ function renderFacets(ctx, w, h, spec, result, fi, reg) {
     notes.push(`${spec.facet}: ${names.length}件中 先頭${MAX_FACETS}件を表示`);
   }
 
-  const shared = {};
-  // 系列の色と凡例の並びをセル間で固定する
-  // (セルごとに出現順で色を割ると、同じ系列が別の色になってしまう)
-  const si = reg ? -1 : result.columns.indexOf("s");
-  if (si >= 0) {
-    const order = [];
-    for (const r of result.rows) {
-      const n = r[si] === null ? "(null)" : String(r[si]);
-      if (!order.includes(n)) order.push(n);
-    }
-    if (order.length > 8) {
-      notes.push(`${order.length}系列中 先頭8系列を表示`);
-    }
-    shared.seriesOrder = order.slice(0, 8);
-  }
-
-  // Y軸レンジの共有(ユーザーが手動指定していないときだけ)
-  const specShared = { ...spec };
-  const xi = result.columns.indexOf("x");
-  if (reg) {
-    // 登録チャートのスケール共有は render 側が shared.allRows から行う
-  } else if (spec.chart_type === "histogram") {
-    const vals = result.rows.map((r) => Number(r[xi])).filter((v) => isFinite(v));
-    if (vals.length) {
-      const lo = Math.min(...vals);
-      const hi = Math.max(...vals);
-      shared.histRange = [lo, hi]; // ビンの区切りも全セルで共有
-      if (numOrNull(spec.y_min) === null && numOrNull(spec.y_max) === null) {
-        // 共有ビンで各ファセットの最大度数を求め、度数軸も揃える
-        const nb = Math.max(2, Math.min(200, spec.bins || 20));
-        const width = hi - lo || 1;
-        let peak = 1;
-        for (const name of shown) {
-          const counts = new Array(nb).fill(0);
-          for (const r of byFacet.get(name)) {
-            const v = Number(r[xi]);
-            if (!isFinite(v)) continue;
-            let b = Math.floor(((v - lo) / width) * nb);
-            if (b >= nb) b = nb - 1;
-            peak = Math.max(peak, ++counts[b]);
-          }
-        }
-        const t = niceTicks(0, peak, 5);
-        specShared.y_min = String(t[0]);
-        specShared.y_max = String(t[t.length - 1]);
-      }
-    }
-  } else if (numOrNull(spec.y_min) === null && numOrNull(spec.y_max) === null) {
-    const yi = result.columns.indexOf("y");
-    let gmin = Infinity;
-    let gmax = -Infinity;
-    if (yi >= 0) {
-      for (const r of result.rows) {
-        const v = Number(r[yi]);
-        if (isFinite(v)) {
-          gmin = Math.min(gmin, v);
-          gmax = Math.max(gmax, v);
-        }
-      }
-    }
-    if (isFinite(gmin)) {
-      if (spec.chart_type === "bar") {
-        // 棒グラフは0基点を維持する
-        gmin = Math.min(0, gmin);
-        gmax = Math.max(0, gmax);
-      }
-      const t = niceTicks(gmin, gmax, 5);
-      specShared.y_min = String(t[0]);
-      specShared.y_max = String(t[t.length - 1]);
-    }
-  }
+  const cellArrays = shown.map((name) => byFacet.get(name));
+  const { shared, specShared, notes: sharedNotes } = computeFacetShared(spec, result, reg, cellArrays);
+  notes.push(...sharedNotes);
 
   if (reg) {
     // 登録チャートは共通のパネル描画に委譲する(スケール共有は render 側が
@@ -1542,8 +1756,11 @@ kohaku.registerChartType({
     const aggName = !spec.agg || spec.agg === "none" ? "avg" : spec.agg;
     const agg = aggName === "count" ? "COUNT(*)" : `${aggName.toUpperCase()}(${qi(spec.value)})`;
     const f = spec.facet ? `, ${qi(spec.facet)} AS f` : "";
-    const grp = spec.facet ? `${x}, ${y}, ${qi(spec.facet)}` : `${x}, ${y}`;
-    return `SELECT ${x} AS x, ${y} AS y, ${agg} AS v${f} FROM (${base}) WHERE ${x} IS NOT NULL AND ${y} IS NOT NULL GROUP BY ${grp} LIMIT 100000`;
+    const f2 = spec.facet && spec.facet2 ? `, ${qi(spec.facet2)} AS f2` : "";
+    const grp = [x, y, spec.facet ? qi(spec.facet) : null, spec.facet && spec.facet2 ? qi(spec.facet2) : null]
+      .filter(Boolean)
+      .join(", ");
+    return `SELECT ${x} AS x, ${y} AS y, ${agg} AS v${f}${f2} FROM (${base}) WHERE ${x} IS NOT NULL AND ${y} IS NOT NULL GROUP BY ${grp} LIMIT 100000`;
   },
   render(ctx, w, h, spec, result, H, shared) {
     const xi = result.columns.indexOf("x");
@@ -1633,8 +1850,13 @@ kohaku.registerChartType({
       agg: spec.agg === "sum" ? "sum" : "avg",
     };
     // 分割指定時はグループ別実行API(装置ごとに管理限界を引き直して一括作図)。
-    // 絞り込みも各グループの計算もRust側で行う(設計Rule 1)
-    if (spec.facet) return api("/api/analyze/group", { ...req, analysis: "spc", group: spec.facet });
+    // 絞り込みも各グループの計算もRust側で行う(設計Rule 1)。
+    // facet2 を足すと (列,行) ペアごとに実行される(2次元ファセット)
+    if (spec.facet) {
+      const g = { ...req, analysis: "spc", group: spec.facet };
+      if (spec.facet2) g.group2 = spec.facet2;
+      return api("/api/analyze/group", g);
+    }
     return api("/api/analyze/spc", req);
   },
   render(ctx, w, h, spec, r, H, shared) {
@@ -3577,6 +3799,7 @@ function init() {
     $("ch-type").appendChild(op);
   }
   $("ch-type").onchange = updateChartFormVisibility;
+  $("ch-facet").onchange = syncFacet2Enabled;
   $("ch-source-kind").onchange = () => { updateChartFormVisibility(); loadChartColumns(); };
   $("ch-dataset").onchange = loadChartColumns;
   $("ch-sql").onchange = loadChartColumns;

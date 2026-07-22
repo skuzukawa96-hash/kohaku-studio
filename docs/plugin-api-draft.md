@@ -187,6 +187,11 @@ kohaku.registerChartType({
   `shared = { facetValue, allRows }` を受け取る — `allRows` は全パネル分の行で、
   スケールをパネル間で共有するための基準(ウェハーマップは座標範囲とカラースケールをここから計算)。
   `buildQuery` はファセット列を `f` として SELECT に含める(本体の分割処理は `f` 列を見る)
+- **2次元ファセット(行×列)**: `spec.facet`(列/横) に加えて `spec.facet2`(行/縦) を指定すると、
+  本体が行×列の格子(seaborn の FacetGrid 相当)で並べる。`buildQuery` はファセット列を
+  `f`(列) と `f2`(行) として SELECT に含める。`fetch` チャートはグループ別実行APIに
+  `group2` を渡し、結果の各グループが `value`(列) と `value2`(行) を持つ。
+  スケール共有・凡例・空セル(データのない行×列の組)の扱いは本体が引き受ける
 - **`fetch` フックを使うチャートのファセット**: `buildQuery` を使うチャートは本体が結果の `f` 列で分割するが、
   `fetch` チャートは結果が行の集合ではないため分割できない。この場合は `fetch` 自身が
   グループ別実行API(`/api/analyze/group`)を呼び、`{group, groups: [{value, result|error}], truncated, total, shown}`

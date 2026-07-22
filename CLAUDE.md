@@ -82,6 +82,7 @@ bi-app        HTTPサーバー(tiny_http) / SQLite in-memoryクエリエンジ�
   - **Canvasの文字状態は描く直前に必ず設定する**（`textAlign` / `textBaseline`）。ファセットは見出しを描いた同じ ctx を各パネルに渡すため、前の設定が残っていると文字が枠外へずれる（v0.7 で SPC の情報行が下段の見出しと重なった）。本体側は `resetTextState()` で既定に戻してから `render` を呼ぶ。
   - **ファセットの格子は外周の余白（`FACET_PAD`）と段の間隔（`FACET_ROW_GAP`）を引いてからパネル高さを決める**。これがないと最上段・最下段の文字がCanvas端で切れ、段の境目でも文字が接触する。
   - 組み込みチャートの描画は `renderChart`（入口）→ `renderFacets`（ファセット分割）→ `drawChartArea`（1枚を描く）の3層。ファセット間では **Y軸レンジ・ヒストグラムのビン・系列の色順を必ず共有する**（`shared` 引数）。揃えないとパネル同士を見比べられない。
+  - **2次元ファセット（行×列）**は `spec.facet`＝列（横）/ `spec.facet2`＝行（縦）。SQL派生（`f`/`f2` 列）は `renderSqlFacetGrid`、`fetch` 派生（SPCの group2 ペア）は `renderFetchFacetGrid` が担当し、どちらも `renderFacetGrid`（列見出し上・行見出し左の格子）に委譲する。スケール共有の計算は 1D/2D 共通の `computeFacetShared()` に集約（個別に書かない）。各軸 `FACET2_DIM_MAX`（=6）まで、SPCのペア列挙はサーバ `GROUP2_MAX`（=36）まで。
 
 ## 開発フロー
 
