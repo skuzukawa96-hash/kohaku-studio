@@ -22,16 +22,16 @@
   </span>
   <span id="project-name">無題プロジェクト</span>
   <span class="spacer"></span>
-  <button id="btn-theme" title="テーマを切り替え(ダーク / ライト)">🌙</button>
-  <button id="btn-project-load">📂 開く</button>
-  <button id="btn-project-save">💾 保存</button>
+  <button id="btn-theme" class="icon-btn" title="テーマを切り替え(ダーク / ライト)"></button>
+  <button id="btn-project-load">開く</button>
+  <button id="btn-project-save">保存</button>
 </header>
 
 <div id="layout">
   <aside id="sidebar">
     <div class="side-head">
       <span>データセット</span>
-      <button id="btn-import" class="primary">＋ インポート</button>
+      <button id="btn-import" class="primary">インポート</button>
     </div>
     <ul id="dataset-list"></ul>
   </aside>
@@ -46,16 +46,16 @@
     </nav>
 
     <section id="tab-data" class="pane active">
-      <div id="data-info" class="hint">左のデータセットを選択するか、「＋ インポート」からデータを取り込んでください。</div>
+      <div id="data-info" class="hint">左のデータセットを選択するか、「インポート」からデータを取り込んでください。</div>
       <div id="data-table" class="table-wrap"></div>
     </section>
 
     <section id="tab-sql" class="pane">
       <div class="sql-toolbar">
         <select id="sql-history" title="実行履歴"><option value="">履歴...</option></select>
-        <button id="btn-run-sql" class="primary">▶ 実行 (Ctrl+Enter)</button>
-        <button id="btn-sql-chart">📈 結果からチャート作成</button>
-        <button id="btn-sql-csv">⬇ CSV保存</button>
+        <button id="btn-run-sql" class="primary">実行 (Ctrl+Enter)</button>
+        <button id="btn-sql-chart">結果からチャート作成</button>
+        <button id="btn-sql-csv">CSV保存</button>
       </div>
       <textarea id="sql-input" spellcheck="false" placeholder="SELECT region, SUM(units) AS total FROM sample_sales GROUP BY region ORDER BY total DESC"></textarea>
       <div id="sql-msg" class="hint"></div>
@@ -119,10 +119,10 @@
           </div>
           <div class="btn-row">
             <button id="btn-ch-preview" class="primary">プレビュー</button>
-            <button id="btn-ch-save">💾 保存</button>
-            <button id="btn-ch-png">📷 PNG保存</button>
+            <button id="btn-ch-save">保存</button>
+            <button id="btn-ch-png">PNG保存</button>
             <button id="btn-ch-new">新規</button>
-            <button id="btn-ch-preset" title="推移チャートとSPC管理図をまとめて作成">⚡ 推移+SPC一式</button>
+            <button id="btn-ch-preset" title="推移チャートとSPC管理図をまとめて作成">推移+SPC一式</button>
           </div>
           <h3>保存済みチャート</h3>
           <ul id="chart-list"></ul>
@@ -149,18 +149,18 @@
         <span id="an-cols-msg" class="hint"></span>
       </div>
       <nav class="subtabs">
-        <button class="subtab active" data-sub="an-profile">📋 データプロファイル</button>
-        <button class="subtab" data-sub="an-reg">📉 回帰分析</button>
-        <button class="subtab" data-sub="an-clu">🧩 クラスタリング</button>
-        <button class="subtab" data-sub="an-ts">📆 時系列分解</button>
-        <button class="subtab" data-sub="an-tool">🏭 装置差分析</button>
-        <button class="subtab" data-sub="an-lot">🔎 ロットトレース</button>
-        <button class="subtab" data-sub="an-test">🧪 自動検定 (Test Advisor)</button>
+        <button class="subtab active" data-sub="an-profile">データプロファイル</button>
+        <button class="subtab" data-sub="an-reg">回帰分析</button>
+        <button class="subtab" data-sub="an-clu">クラスタリング</button>
+        <button class="subtab" data-sub="an-ts">時系列分解</button>
+        <button class="subtab" data-sub="an-tool">装置差分析</button>
+        <button class="subtab" data-sub="an-lot">ロットトレース</button>
+        <button class="subtab" data-sub="an-test">自動検定 (Test Advisor)</button>
       </nav>
 
       <div id="an-profile" class="subpane active">
         <div class="btn-row">
-          <button id="btn-an-profile" class="primary">▶ 自動プロファイル実行</button>
+          <button id="btn-an-profile" class="primary">自動プロファイル実行</button>
           <label title="選んだ列の値ごとに分けてプロファイルを実行し、結果を並べます">グループ分割 <select id="an-profile-group"></select></label>
           <span class="hint">全列の統計量・相関行列・強い相関のペアを自動算出します</span>
         </div>
@@ -172,7 +172,7 @@
           <label>目的変数 Y <select id="reg-y"></select></label>
           <div class="an-check-col">説明変数 X <div id="reg-x" class="checklist"></div></div>
           <label title="選んだ列の値ごとに分けて回帰を実行し、結果を並べます">グループ分割 <select id="reg-group"></select></label>
-          <button id="btn-an-reg" class="primary">▶ 回帰実行</button>
+          <button id="btn-an-reg" class="primary">回帰実行</button>
         </div>
         <div id="reg-out" class="an-out"></div>
         <canvas id="reg-canvas" class="an-canvas hidden"></canvas>
@@ -182,16 +182,16 @@
         <div class="an-controls">
           <div class="an-check-col">特徴量 <div id="clu-x" class="checklist"></div></div>
           <label>クラスタ数 k <input id="clu-k" type="number" value="3" min="2" max="50"></label>
-          <button id="btn-clu-elbow" title="エルボー法でkを自動提案">💡 kを自動提案</button>
+          <button id="btn-clu-elbow" title="エルボー法でkを自動提案">kを自動提案</button>
           <label title="選んだ列の値ごとに分けてクラスタリングを実行し、結果を並べます(軸選択・保存は使えません)">グループ分割 <select id="clu-group"></select></label>
-          <button id="btn-an-clu" class="primary">▶ クラスタリング実行</button>
+          <button id="btn-an-clu" class="primary">クラスタリング実行</button>
         </div>
         <div id="clu-out" class="an-out"></div>
         <div class="an-controls hidden" id="clu-axes-row">
           <label>X軸 <select id="clu-ax"></select></label>
           <label>Y軸 <select id="clu-ay"></select></label>
           <label>結果をデータセット保存 <input id="clu-save-name" placeholder="例: sales_clustered"></label>
-          <button id="btn-clu-save">💾 保存</button>
+          <button id="btn-clu-save">保存</button>
         </div>
         <canvas id="clu-canvas" class="an-canvas hidden"></canvas>
       </div>
@@ -214,7 +214,7 @@
             </select>
           </label>
           <label title="選んだ列の値ごとに分けて分解を実行し、結果を並べます">グループ分割 <select id="ts-group"></select></label>
-          <button id="btn-an-ts" class="primary">▶ 分解実行</button>
+          <button id="btn-an-ts" class="primary">分解実行</button>
         </div>
         <div class="hint">時間列で並べ替えた等間隔の系列として分解します(日付の欠けがある場合はSQLで補完してください)</div>
         <div id="ts-out" class="an-out"></div>
@@ -225,7 +225,7 @@
         <div class="an-controls">
           <label>装置/グループ列 <select id="tool-g"></select></label>
           <label>測定値の列 <select id="tool-v"></select></label>
-          <button id="btn-an-tool" class="primary">▶ 装置差分析</button>
+          <button id="btn-an-tool" class="primary">装置差分析</button>
         </div>
         <div class="hint">グループ間の平均差を Welch 検定(2群: t検定 / 3群以上: ANOVA + Holm補正の多重比較)で評価します。各群3点以上の測定値が必要です</div>
         <div id="tool-out" class="an-out"></div>
@@ -237,7 +237,7 @@
           <label>ID列 <select id="lot-col"></select></label>
           <label>検索するID <input id="lot-id" placeholder="例: LOT0042" spellcheck="false"></label>
           <label><input type="checkbox" id="lot-partial"> 部分一致</label>
-          <button id="btn-an-lot" class="primary">🔎 トレース</button>
+          <button id="btn-an-lot" class="primary">トレース</button>
         </div>
         <div class="hint">ID列を持つすべてのデータセットを横断検索します(上のデータソース選択に関わらず全データセットが対象)</div>
         <div id="lot-out" class="an-out"></div>
@@ -288,13 +288,13 @@
               <option value="none">なし(未補正)</option>
             </select>
           </label>
-          <button id="btn-tst-advise" class="primary">🔍 検定候補を提案</button>
+          <button id="btn-tst-advise" class="primary">検定候補を提案</button>
         </div>
         <div id="tst-advice" class="an-out"></div>
         <div id="tst-run-row" class="an-controls hidden">
           <label>実行する検定 <select id="tst-choice"></select></label>
-          <button id="btn-tst-run" class="primary">▶ 検定を実行</button>
-          <button id="btn-tst-md" class="hidden">📋 Markdownコピー</button>
+          <button id="btn-tst-run" class="primary">検定を実行</button>
+          <button id="btn-tst-md" class="hidden">Markdownコピー</button>
         </div>
         <div id="tst-result" class="an-out"></div>
       </div>
@@ -302,9 +302,9 @@
 
     <section id="tab-dashboard" class="pane">
       <div class="sql-toolbar">
-        <button id="btn-dash-refresh" class="primary">🔄 更新</button>
-        <button id="btn-dash-png">📷 PNG保存</button>
-        <button id="btn-dash-html">📄 HTMLレポート</button>
+        <button id="btn-dash-refresh" class="primary">更新</button>
+        <button id="btn-dash-png">PNG保存</button>
+        <button id="btn-dash-html">HTMLレポート</button>
         <label class="dash-filter-label">グローバルフィルタ
           <select id="dash-filter-col"><option value="">(列を選択)</option></select>
         </label>
@@ -325,12 +325,12 @@
   <div class="modal">
     <div class="modal-head">
       <span>データインポート</span>
-      <button class="close" data-close="import-modal">✕</button>
+      <button class="close" data-close="import-modal">×</button>
     </div>
     <div class="modal-body">
       <nav class="subtabs">
-        <button id="imp-tab-file" class="subtab active">📁 ファイル</button>
-        <button id="imp-tab-db" class="subtab">🗄 データベース</button>
+        <button id="imp-tab-file" class="subtab active">ファイル</button>
+        <button id="imp-tab-db" class="subtab">データベース</button>
       </nav>
       <div id="imp-file-panel">
         <div class="browse-bar">
@@ -378,8 +378,8 @@
 <div id="preset-modal" class="modal-bg hidden">
   <div class="modal small">
     <div class="modal-head">
-      <span>⚡ 推移 + SPC 一式を作成</span>
-      <button class="close" data-close="preset-modal">✕</button>
+      <span>推移 + SPC 一式を作成</span>
+      <button class="close" data-close="preset-modal">×</button>
     </div>
     <div class="modal-body">
       <label>データセット <select id="pr-dataset"></select></label>
@@ -399,7 +399,7 @@
   <div class="modal small">
     <div class="modal-head">
       <span id="prj-title">プロジェクト</span>
-      <button class="close" data-close="project-modal">✕</button>
+      <button class="close" data-close="project-modal">×</button>
     </div>
     <div class="modal-body">
       <label>ファイルパス <input id="prj-path" placeholder="C:\...\myproject.kohaku"></label>

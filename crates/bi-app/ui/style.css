@@ -2,21 +2,23 @@
    Canvasチャートの色もここから読む(app.js の refreshThemeColors)ため、
    色の定義はこのファイルに一元化する。 */
 :root {
-  --bg: #17191f;
-  --bg2: #1f232b;
-  --bg3: #282d37;
-  --border: #363c48;
-  --text: #dde2ea;
-  --muted: #8a93a3;
+  --bg: #16181e;
+  --bg2: #1c1f26;
+  --bg3: #262a33;
+  --border: #2b303a;         /* 構造の区切り。控えめに */
+  --border-strong: #363c48;  /* 入力欄など、輪郭を見せたい箇所 */
+  --text: #e4e8ef;
+  --muted: #868f9e;
   --accent: #e8a33d;
-  --accent-fg: #17191f;      /* アクセント背景の上に載せる文字色 */
+  --accent-fg: #16181e;      /* アクセント背景の上に載せる文字色 */
   --accent2: #4fc4a0;
   --danger: #e5707a;
   --ok: #4fc4a0;
   --warn: #e0a15c;
-  --sel: #3a3122;            /* 選択中の行 */
-  --stripe: #1b1f26;         /* テーブルの縞 */
-  --shadow: rgba(0, 0, 0, .35);
+  --sel: #322a1d;            /* 選択中の行 */
+  --stripe: #1a1d24;         /* テーブルの縞 */
+  --ring: rgba(232, 163, 61, .22);  /* フォーカスリング */
+  --shadow: rgba(0, 0, 0, .3);
   --overlay: rgba(0, 0, 0, .55);
   /* チャート用。データの色はブランド色(--accent)と分ける */
   --chart-text: #a8b0be;
@@ -34,21 +36,23 @@
 }
 
 :root[data-theme="light"] {
-  --bg: #f5f6f9;
+  --bg: #f7f8fa;
   --bg2: #ffffff;
-  --bg3: #eceff4;
-  --border: #d3d9e2;
-  --text: #232833;
-  --muted: #667085;
+  --bg3: #eef1f5;
+  --border: #e4e8ee;
+  --border-strong: #d3d9e2;
+  --text: #1e232c;
+  --muted: #697588;
   --accent: #9d6a0e;
   --accent-fg: #ffffff;
   --accent2: #17876a;
   --danger: #c93b48;
   --ok: #17876a;
   --warn: #b4700c;
-  --sel: #fdf1dc;
+  --sel: #fbf1dd;
   --stripe: #f8f9fb;
-  --shadow: rgba(15, 20, 30, .12);
+  --ring: rgba(157, 106, 14, .16);
+  --shadow: rgba(15, 20, 30, .1);
   --overlay: rgba(20, 24, 32, .35);
   --chart-text: #4b5563;
   --chart-grid: #e1e5ec;
@@ -69,22 +73,30 @@ html, body { height: 100%; margin: 0; }
 body {
   font-family: "Yu Gothic UI", "Meiryo", "Segoe UI", sans-serif;
   font-size: 13px;
+  line-height: 1.5;
   background: var(--bg);
   color: var(--text);
   display: flex;
   flex-direction: column;
+  -webkit-font-smoothing: antialiased;
 }
 
 #header {
   display: flex; align-items: center; gap: 12px;
-  padding: 6px 12px; background: var(--bg2);
+  padding: 9px 16px; background: var(--bg2);
   border-bottom: 1px solid var(--border);
 }
-.logo { display: flex; align-items: center; gap: 7px; font-weight: bold; font-size: 15px; }
+.logo { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; letter-spacing: -.01em; }
 .logo svg { display: block; }
-#project-name { color: var(--muted); }
+#project-name { color: var(--muted); font-size: 12px; }
 .spacer { flex: 1; }
-#btn-theme { padding: 4px 9px; font-size: 13px; line-height: 1; }
+/* アイコンのみのボタン(テーマ切替など)は正方形で中身を中央寄せ */
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 6px; width: 30px; height: 28px; line-height: 0; color: var(--muted);
+}
+.icon-btn:hover { color: var(--text); }
+.icon-btn svg { display: block; }
 
 #layout { flex: 1; display: flex; min-height: 0; }
 
@@ -95,8 +107,9 @@ body {
 }
 .side-head {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 8px 10px; border-bottom: 1px solid var(--border);
-  font-weight: bold;
+  padding: 11px 14px; border-bottom: 1px solid var(--border);
+  font-weight: 600; font-size: 12px; letter-spacing: .02em;
+  text-transform: uppercase; color: var(--muted);
 }
 #dataset-list { list-style: none; margin: 0; padding: 4px; overflow-y: auto; flex: 1; }
 #dataset-list li {
@@ -111,33 +124,38 @@ body {
 #dataset-list li:hover .ds-del { visibility: visible; }
 
 #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-#tabs { display: flex; gap: 2px; background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 8px; }
+#tabs { display: flex; gap: 4px; background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 12px; }
 .tab {
   background: none; border: none; color: var(--muted);
-  padding: 9px 16px; cursor: pointer; font-size: 13px;
-  border-bottom: 2px solid transparent;
+  padding: 10px 14px; cursor: pointer; font-size: 13px;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: color .12s;
 }
 .tab:hover { color: var(--text); }
-.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
 
-.pane { display: none; flex: 1; padding: 10px; overflow: auto; min-height: 0; flex-direction: column; }
+.pane { display: none; flex: 1; padding: 16px; overflow: auto; min-height: 0; flex-direction: column; }
 .pane.active { display: flex; }
 
 button {
-  background: var(--bg3); color: var(--text);
-  border: 1px solid var(--border); border-radius: 5px;
-  padding: 5px 12px; cursor: pointer; font-size: 12px;
+  background: var(--bg2); color: var(--text);
+  border: 1px solid var(--border-strong); border-radius: 6px;
+  padding: 6px 13px; cursor: pointer; font-size: 12px; font-weight: 500;
+  transition: background .12s, border-color .12s, box-shadow .12s;
 }
-button:hover { border-color: var(--accent); }
-button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: bold; }
-button.primary:hover { filter: brightness(1.08); }
+button:hover { background: var(--bg3); }
+button:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+button.primary:hover { filter: brightness(1.06); background: var(--accent); }
 
 input, select, textarea {
   background: var(--bg); color: var(--text);
-  border: 1px solid var(--border); border-radius: 5px;
-  padding: 5px 8px; font-size: 12px; font-family: inherit;
+  border: 1px solid var(--border-strong); border-radius: 6px;
+  padding: 6px 9px; font-size: 12px; font-family: inherit;
+  transition: border-color .12s, box-shadow .12s;
 }
-input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
+input:disabled, select:disabled { opacity: .5; cursor: not-allowed; }
 
 .hint { color: var(--muted); padding: 4px 0; }
 .hint.error { color: var(--danger); }
@@ -147,10 +165,10 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .table-wrap { overflow: auto; flex: 1; min-height: 0; }
 table.grid { border-collapse: collapse; font-size: 12px; white-space: nowrap; }
 table.grid th, table.grid td {
-  border: 1px solid var(--border); padding: 3px 8px; text-align: left;
+  border: 1px solid var(--border); padding: 5px 10px; text-align: left;
   max-width: 320px; overflow: hidden; text-overflow: ellipsis;
 }
-table.grid th { background: var(--bg3); position: sticky; top: 0; }
+table.grid th { background: var(--bg3); position: sticky; top: 0; font-weight: 600; color: var(--muted); }
 table.grid td.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.grid td.null { color: var(--muted); font-style: italic; }
 table.grid tr:nth-child(even) td { background: var(--stripe); }
@@ -165,9 +183,9 @@ table.grid tr:nth-child(even) td { background: var(--stripe); }
 
 /* チャート */
 #charts-layout { display: flex; gap: 12px; flex: 1; min-height: 0; }
-#chart-editor { width: 270px; min-width: 270px; overflow-y: auto; }
-#chart-editor h3 { margin: 8px 0 6px; font-size: 13px; color: var(--accent2); }
-#chart-editor label { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; color: var(--muted); }
+#chart-editor { width: 274px; min-width: 274px; overflow-y: auto; }
+#chart-editor h3 { margin: 2px 0 12px; font-size: 12px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; color: var(--muted); }
+#chart-editor label { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; color: var(--muted); font-size: 12px; }
 #chart-editor textarea { font-family: Consolas, monospace; }
 .btn-row { display: flex; gap: 8px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
 /* Y軸レンジの手動指定(空欄なら自動) */
@@ -185,7 +203,7 @@ table.grid tr:nth-child(even) td { background: var(--stripe); }
 #chart-list .ch-del { color: var(--danger); border: none; background: none; cursor: pointer; }
 #chart-view { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 #chart-view h3 { margin: 0 0 6px; }
-#chart-canvas { width: 100%; height: 400px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; }
+#chart-canvas { width: 100%; height: 400px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; }
 
 /* ダッシュボード */
 .dash-filter-label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
@@ -209,17 +227,19 @@ table.grid tr:nth-child(even) td { background: var(--stripe); }
 }
 @media (max-width: 900px) { #dash-grid { grid-template-columns: 1fr; } }
 .dash-card {
-  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 10px;
-  box-shadow: 0 1px 3px var(--shadow);
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 14px;
+  box-shadow: 0 1px 2px var(--shadow);
 }
 .dash-card.wide { grid-column: 1 / -1; }
-.dash-head { display: flex; align-items: center; gap: 2px; margin-bottom: 6px; }
-.dash-head h4 { flex: 1; margin: 0; font-size: 13px; }
+.dash-head { display: flex; align-items: center; gap: 4px; margin-bottom: 8px; }
+.dash-head h4 { flex: 1; margin: 0; font-size: 13px; font-weight: 600; }
 .dash-btn {
   background: none; border: 1px solid transparent; color: var(--muted);
-  cursor: pointer; font-size: 12px; padding: 1px 5px; border-radius: 4px;
+  cursor: pointer; padding: 3px; border-radius: 5px; line-height: 0;
+  display: inline-flex; align-items: center; justify-content: center;
 }
-.dash-btn:hover { color: var(--text); border-color: var(--border); background: var(--bg); }
+.dash-btn svg { display: block; }
+.dash-btn:hover { color: var(--text); background: var(--bg3); }
 .dash-card canvas { width: 100%; height: 260px; }
 .dash-card.h-s canvas { height: 180px; }
 .dash-card.h-l canvas { height: 400px; }
@@ -235,10 +255,11 @@ table.grid tr:nth-child(even) td { background: var(--stripe); }
 .subtabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }
 .subtab {
   background: none; border: none; color: var(--muted);
-  padding: 7px 14px; cursor: pointer; border-bottom: 2px solid transparent; font-size: 12px;
+  padding: 8px 13px; cursor: pointer; border-bottom: 2px solid transparent; font-size: 12px;
+  margin-bottom: -1px; transition: color .12s;
 }
 .subtab:hover { color: var(--text); }
-.subtab.active { color: var(--accent2); border-bottom-color: var(--accent2); }
+.subtab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
 .subpane { display: none; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; }
 .subpane.active { display: flex; }
 .an-controls { display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 8px; }
@@ -250,7 +271,7 @@ table.grid tr:nth-child(even) td { background: var(--stripe); }
 }
 .checklist label { flex-direction: row !important; align-items: center; gap: 4px; color: var(--text); cursor: pointer; }
 .an-out { margin: 6px 0; }
-.an-out h4 { margin: 10px 0 4px; color: var(--accent2); font-size: 13px; }
+.an-out h4 { margin: 14px 0 5px; color: var(--text); font-size: 13px; font-weight: 600; }
 .an-out ul { margin: 4px 0; padding-left: 20px; }
 .rec-box { background: var(--bg2); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 4px; padding: 8px 12px; margin: 4px 0; }
 .rec-box b { color: var(--accent); }
@@ -259,11 +280,11 @@ table.grid tr:nth-child(even) td { background: var(--stripe); }
 .an-canvas { width: 100%; height: 340px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; flex: none; }
 .ts-canvas { height: 480px; } /* 時系列分解は3段重ねのため高め */
 /* グループ別実行: 値ごとのパネル。境界を明示して結果の切れ目を分かりやすくする */
-.an-group { border-left: 3px solid var(--accent); padding-left: 12px; margin: 14px 0; }
-.an-group > h4 { margin: 0 0 6px; color: var(--accent); font-size: 14px; }
-.metrics { display: flex; gap: 16px; flex-wrap: wrap; margin: 6px 0; }
-.metric { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 14px; }
-.metric .mv { font-size: 16px; font-weight: bold; color: var(--accent); }
+.an-group { border-left: 2px solid var(--border-strong); padding-left: 14px; margin: 18px 0; }
+.an-group > h4 { margin: 0 0 8px; color: var(--text); font-size: 13px; font-weight: 600; }
+.metrics { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0; }
+.metric { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 16px; }
+.metric .mv { font-size: 17px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
 .metric .ml { font-size: 11px; color: var(--muted); }
 table.corr td { text-align: center; min-width: 52px; }
 table.corr td.diag { color: var(--muted); }
@@ -292,9 +313,10 @@ table.corr td.diag { color: var(--muted); }
 .modal.small { width: 460px; }
 .modal-head {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 10px 14px; border-bottom: 1px solid var(--border); font-weight: bold;
+  padding: 12px 16px; border-bottom: 1px solid var(--border); font-weight: 600;
 }
-.modal-head .close { border: none; background: none; color: var(--muted); font-size: 14px; }
+.modal-head .close { border: none; background: none; color: var(--muted); font-size: 18px; line-height: 1; padding: 2px 6px; border-radius: 5px; }
+.modal-head .close:hover { color: var(--text); background: var(--bg3); }
 .modal-body { padding: 12px 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
 .modal-body label { display: flex; flex-direction: column; gap: 3px; color: var(--muted); }
 
@@ -302,10 +324,14 @@ table.corr td.diag { color: var(--muted); }
 .browse-bar input { flex: 1; }
 #imp-browser { max-height: 180px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; }
 #imp-entries { list-style: none; margin: 0; padding: 2px; }
-#imp-entries li { padding: 4px 8px; cursor: pointer; border-radius: 3px; display: flex; justify-content: space-between; }
+#imp-entries li { padding: 5px 9px; cursor: pointer; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
 #imp-entries li:hover { background: var(--bg3); }
 #imp-entries li.sel { background: var(--sel); }
 #imp-entries .fsize { color: var(--muted); font-size: 11px; }
+#imp-entries .imp-name { display: inline-flex; align-items: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.imp-ico { display: inline-flex; align-items: center; color: var(--muted); margin-right: 8px; }
+.imp-ico svg { width: 15px; height: 15px; }
+#imp-entries li.imp-dir { display: flex; align-items: center; }
 .imp-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
 .imp-row label { display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 12px; }
 #imp-preview { max-height: 240px; border: 1px solid var(--border); border-radius: 4px; }

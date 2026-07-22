@@ -4,6 +4,20 @@
 
 const $ = (id) => document.getElementById(id);
 
+// 細線のインラインSVGアイコン集(絵文字を使わずUIを軽く保つ。
+// currentColor で描くので、CSS の色指定にそのまま追随する)。
+const svg = (p) => `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+const ICON = {
+  moon: svg('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/>'),
+  sun: svg('<circle cx="12" cy="12" r="4.2"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19"/>'),
+  left: svg('<path d="M15 6l-6 6 6 6"/>'),
+  right: svg('<path d="M9 6l6 6-6 6"/>'),
+  width: svg('<path d="M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4"/>'),
+  height: svg('<path d="M12 3v18M8 7l4-4 4 4M8 17l4 4 4-4"/>'),
+  folder: svg('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>'),
+  file: svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/>'),
+};
+
 let datasets = [];
 let charts = [];
 let currentDataset = null;
@@ -28,8 +42,8 @@ function applyTheme(name) {
   localStorage.setItem("kohaku.theme", theme);
   const btn = $("btn-theme");
   if (btn) {
-    // 押すと切り替わる先を示す(ダーク表示中は「ライトへ」の太陽)
-    btn.textContent = theme === "dark" ? "🌙" : "☀️";
+    // 押すと切り替わる先を示す(ダーク表示中は「ライトへ」の太陽アイコン)
+    btn.innerHTML = theme === "dark" ? ICON.sun : ICON.moon;
     btn.title = theme === "dark" ? "ライトテーマに切り替え" : "ダークテーマに切り替え";
   }
   refreshThemeColors();
@@ -153,7 +167,7 @@ function renderSidebar() {
     li.classList.toggle("active", d.name === currentDataset);
     li.innerHTML = `<span class="ds-name" title="${esc(maskSecret(d.path))}">${esc(d.name)}</span>
       <span class="ds-rows">${(d.row_count || 0).toLocaleString()}行</span>
-      <button class="ds-del" title="削除">✕</button>`;
+      <button class="ds-del" title="削除">×</button>`;
     li.querySelector(".ds-name").onclick = () => showDataset(d.name);
     li.querySelector(".ds-del").onclick = async (e) => {
       e.stopPropagation();
@@ -261,20 +275,22 @@ async function browse(path) {
     ul.innerHTML = "";
     if (r.parent) {
       const li = document.createElement("li");
-      li.textContent = "📁 ..";
+      li.className = "imp-dir";
+      li.innerHTML = `<span class="imp-ico">${ICON.folder}</span><span>..</span>`;
       li.onclick = () => browse(r.parent);
       ul.appendChild(li);
     }
     for (const d of r.dirs) {
       const li = document.createElement("li");
-      li.textContent = "📁 " + d;
+      li.className = "imp-dir";
+      li.innerHTML = `<span class="imp-ico">${ICON.folder}</span><span>${esc(d)}</span>`;
       li.onclick = () => browse(r.path + "\\" + d);
       ul.appendChild(li);
     }
     for (const f of r.files) {
       const li = document.createElement("li");
       const kb = Math.max(1, Math.round(f.size / 1024));
-      li.innerHTML = `<span>📄 ${esc(f.name)}</span><span class="fsize">${kb.toLocaleString()} KB</span>`;
+      li.innerHTML = `<span class="imp-name"><span class="imp-ico">${ICON.file}</span>${esc(f.name)}</span><span class="fsize">${kb.toLocaleString()} KB</span>`;
       li.onclick = () => {
         ul.querySelectorAll("li").forEach((x) => x.classList.remove("sel"));
         li.classList.add("sel");
@@ -689,7 +705,7 @@ function renderChartList() {
   for (const c of charts) {
     const li = document.createElement("li");
     li.classList.toggle("active", c.id === editingChartId);
-    li.innerHTML = `<span>${esc(c.name)}</span><button class="ch-del" title="削除">✕</button>`;
+    li.innerHTML = `<span>${esc(c.name)}</span><button class="ch-del" title="削除">×</button>`;
     li.querySelector("span").onclick = () => loadChartToForm(c);
     li.querySelector(".ch-del").onclick = async (e) => {
       e.stopPropagation();
@@ -3328,7 +3344,7 @@ function renderFilterChips() {
     chip.className = "dash-chip";
     const label =
       f.values.slice(0, 3).map(String).join(", ") + (f.values.length > 3 ? ` +${f.values.length - 3}` : "");
-    chip.innerHTML = `<b>${esc(f.col)}</b>: ${esc(label)} <button title="このフィルタを外す">✕</button>`;
+    chip.innerHTML = `<b>${esc(f.col)}</b>: ${esc(label)} <button title="このフィルタを外す">×</button>`;
     chip.querySelector("button").onclick = () => {
       dashFilters = dashFilters.filter((x) => x !== f);
       renderFilterChips();
@@ -3441,10 +3457,10 @@ async function renderDashboard(force) {
     const head = document.createElement("div");
     head.className = "dash-head";
     head.innerHTML = `<h4>${esc(spec.name)}${naHtml}</h4>
-      <button class="dash-btn" data-act="left" title="左へ移動">◀</button>
-      <button class="dash-btn" data-act="right" title="右へ移動">▶</button>
-      <button class="dash-btn" data-act="width" title="幅を切替(1列 / 2列)">⬌</button>
-      <button class="dash-btn" data-act="height" title="高さを切替(小 / 中 / 大)">↕</button>`;
+      <button class="dash-btn" data-act="left" title="左へ移動">${ICON.left}</button>
+      <button class="dash-btn" data-act="right" title="右へ移動">${ICON.right}</button>
+      <button class="dash-btn" data-act="width" title="幅を切替(1列 / 2列)">${ICON.width}</button>
+      <button class="dash-btn" data-act="height" title="高さを切替(小 / 中 / 大)">${ICON.height}</button>`;
     const canvas = document.createElement("canvas");
     const tdiv = document.createElement("div");
     tdiv.className = "table-wrap hidden";
