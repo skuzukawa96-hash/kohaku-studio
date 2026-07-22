@@ -427,9 +427,11 @@ function chartSpecFromForm() {
     facet: $("ch-facet").value,
     agg: $("ch-agg").value,
     bins: parseInt($("ch-bins").value, 10) || 20,
-    // Y軸の手動レンジ(空欄なら自動)
+    // 軸の手動レンジ(空欄なら自動)
     y_min: $("ch-ymin").value.trim(),
     y_max: $("ch-ymax").value.trim(),
+    x_min: $("ch-xmin").value.trim(),
+    x_max: $("ch-xmax").value.trim(),
   };
 }
 
@@ -452,6 +454,8 @@ function loadChartToForm(spec) {
     $("ch-bins").value = spec.bins || 20;
     $("ch-ymin").value = spec.y_min ?? "";
     $("ch-ymax").value = spec.y_max ?? "";
+    $("ch-xmin").value = spec.x_min ?? "";
+    $("ch-xmax").value = spec.x_max ?? "";
     previewChart();
   });
   renderChartList();
@@ -476,6 +480,7 @@ function updateChartFormVisibility() {
     $("ch-y-label").textContent = typeof f.y === "string" ? f.y : "Y列";
     $("ch-value-label").textContent = typeof f.value === "string" ? f.value : "値の列";
     $("ch-yrange-row").classList.toggle("hidden", !f.yrange);
+    $("ch-xrange-row").classList.toggle("hidden", !f.xrange);
     $("ch-facet-row").classList.toggle("hidden", !f.facet);
     return;
   }
@@ -489,6 +494,11 @@ function updateChartFormVisibility() {
   $("ch-facet-row").classList.toggle("hidden", type === "table");
   $("ch-agg-row").classList.toggle("hidden", type === "histogram" || type === "table" || type === "scatter");
   $("ch-yrange-row").classList.toggle("hidden", type === "table");
+  // X軸の手動レンジは、X軸が数値になるグラフ(散布図・折れ線・ヒストグラム)でのみ意味を持つ
+  $("ch-xrange-row").classList.toggle(
+    "hidden",
+    !["scatter", "line", "histogram"].includes(type),
+  );
 }
 
 function renderDatasetSelect() {
@@ -760,13 +770,14 @@ function numOrNull(v) {
   return isFinite(n) ? n : null;
 }
 
-/** 自動計算した目盛りに、spec の手動Y軸レンジ(y_min / y_max)を重ねる。
- *  片側だけの指定も可。不正(最小≧最大)なら自動のままにする。
- *  戻り値: {ticks, min, max} */
-function applyManualRange(spec, autoTicks, count) {
+/** 自動計算した目盛りに、spec の手動レンジを重ねる。既定はY軸(y_min / y_max)、
+ *  axis="x" でX軸(x_min / x_max)を見る。片側だけの指定も可。
+ *  不正(最小≧最大)なら自動のままにする。戻り値: {ticks, min, max} */
+function applyManualRange(spec, autoTicks, count, axis) {
   const auto = { ticks: autoTicks, min: autoTicks[0], max: autoTicks[autoTicks.length - 1] };
-  const lo = numOrNull(spec && spec.y_min);
-  const hi = numOrNull(spec && spec.y_max);
+  const key = axis === "x" ? "x" : "y";
+  const lo = numOrNull(spec && spec[`${key}_min`]);
+  const hi = numOrNull(spec && spec[`${key}_max`]);
   if (lo === null && hi === null) return auto;
   const min = lo !== null ? lo : auto.min;
   const max = hi !== null ? hi : auto.max;
@@ -1215,13 +1226,18 @@ function drawChartArea(ctx, w, h, spec, result, title, shared) {
     const vals = seriesVals.flat();
     if (!vals.length) return noData();
     // ファセット表示ではビンの区切りを全セルで共有する
-    const lo = shared && shared.histRange ? shared.histRange[0] : Math.min(...vals);
-    const hi = shared && shared.histRange ? shared.histRange[1] : Math.max(...vals);
+    let lo = shared && shared.histRange ? shared.histRange[0] : Math.min(...vals);
+    let hi = shared && shared.histRange ? shared.histRange[1] : Math.max(...vals);
+    // X軸の手動レンジ(空欄なら自動)。指定時はその範囲だけをビン化して表示する
+    const mlo = numOrNull(spec.x_min), mhi = numOrNull(spec.x_max);
+    const nlo = mlo !== null ? mlo : lo, nhi = mhi !== null ? mhi : hi;
+    if (nhi > nlo) { lo = nlo; hi = nhi; }
     const nb = Math.max(2, Math.min(200, spec.bins || 20));
     const width = (hi - lo) || 1;
     const countsPer = seriesVals.map((vs) => {
       const counts = new Array(nb).fill(0);
       for (const v of vs) {
+        if (v < lo || v > hi) continue; // 手動レンジ外は端のビンを膨らませないよう除外
         let b = Math.floor(((v - lo) / width) * nb);
         if (b >= nb) b = nb - 1;
         counts[b]++;
@@ -1294,12 +1310,16 @@ function drawChartArea(ctx, w, h, spec, result, title, shared) {
     const flat = seriesPts.flat();
     if (!flat.length) return noData();
     const xs = flat.map((p) => p[0]), ys = flat.map((p) => p[1]);
-    const xMin = Math.min(...xs), xMax = Math.max(...xs);
     // 散布図・折れ線は0を強制しない(歩留まり86〜96%を0〜100で描くと変化が読めない)。
     // 棒グラフは長さが値を表すため0を含める(下の分岐)。
     const yRange = applyManualRange(spec, niceTicks(Math.min(...ys), Math.max(...ys), 5), 5);
     const yTicks = yRange.ticks;
     const yMin = yRange.min, yMax = yRange.max;
+    // X軸の手動レンジはX軸が数値のときのみ(カテゴリ軸はインデックス配置のため無効)
+    const xRange = xNumeric
+      ? applyManualRange(spec, niceTicks(Math.min(...xs), Math.max(...xs), 6), 6, "x")
+      : { min: Math.min(...xs), max: Math.max(...xs) };
+    const xMin = xRange.min, xMax = xRange.max;
     drawAxes(yTicks, yMin, yMax);
     const px = (x) => m.l + ((x - xMin) / ((xMax - xMin) || 1)) * pw;
     const py = (y) => m.t + ph - ((y - yMin) / ((yMax - yMin) || 1)) * ph;
@@ -1329,7 +1349,8 @@ function drawChartArea(ctx, w, h, spec, result, title, shared) {
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
     if (xNumeric) {
-      for (const t of niceTicks(xMin, xMax, 6)) {
+      // 手動レンジ指定時は ticksWithin 由来の目盛りを使う(端まで覆う)
+      for (const t of (xRange.ticks || niceTicks(xMin, xMax, 6))) {
         const xx = px(t);
         if (xx >= m.l - 1 && xx <= w - m.r + 1) ctx.fillText(fmtTick(t), xx, m.t + ph + 6);
       }
@@ -3562,6 +3583,8 @@ function init() {
   // Y軸レンジは見た目の微調整なので、入力したらすぐプレビューへ反映する
   $("ch-ymin").onchange = previewChart;
   $("ch-ymax").onchange = previewChart;
+  $("ch-xmin").onchange = previewChart;
+  $("ch-xmax").onchange = previewChart;
   $("btn-ch-preview").onclick = previewChart;
   $("btn-ch-save").onclick = saveChart;
   $("btn-ch-png").onclick = exportChartPng;
