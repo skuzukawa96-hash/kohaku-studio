@@ -377,6 +377,52 @@ async function doImport() {
 
 // ---------- SQL ----------
 
+// シンタックスハイライト。外部ライブラリを使わず、透明にした textarea の
+// 背面に色付きの <pre> を重ねて描く(編集・IME・取り消しは textarea のまま)。
+
+/** 色を付けるSQLキーワード(SQLiteの基本構文 + よく使う関数・型) */
+const SQL_KEYWORDS = new Set(
+  ("SELECT FROM WHERE GROUP BY ORDER HAVING LIMIT OFFSET JOIN INNER LEFT RIGHT FULL OUTER CROSS ON " +
+   "AS AND OR NOT IN LIKE GLOB BETWEEN IS NULL EXISTS CASE WHEN THEN ELSE END DISTINCT ALL UNION " +
+   "INTERSECT EXCEPT WITH RECURSIVE INSERT INTO VALUES UPDATE SET DELETE CREATE TABLE VIEW INDEX " +
+   "DROP ALTER ADD PRIMARY KEY FOREIGN REFERENCES UNIQUE CHECK DEFAULT AUTOINCREMENT CAST COLLATE " +
+   "ASC DESC NULLS FIRST LAST OVER PARTITION WINDOW ROWS RANGE PRECEDING FOLLOWING CURRENT ROW " +
+   "COUNT SUM AVG MIN MAX ABS ROUND COALESCE IFNULL NULLIF SUBSTR LENGTH UPPER LOWER TRIM REPLACE " +
+   "DATE TIME DATETIME STRFTIME JULIANDAY INTEGER REAL TEXT BLOB NUMERIC BOOLEAN TRUE FALSE").split(" ")
+);
+
+/** SQLを色付きHTMLへ変換する。優先順は コメント → 文字列 → 引用識別子 →
+ *  数値 → 語(キーワード判定)。コメントと文字列を先に食わせないと、
+ *  その中のキーワードまで色付いてしまう。 */
+function highlightSql(src) {
+  // 1:ブロックコメント 2:行コメント 3:文字列 4:引用識別子 5:数値 6:語 7:その他
+  const re = /(\/\*[\s\S]*?(?:\*\/|$))|(--[^\n]*)|('(?:''|[^'])*'?)|("(?:""|[^"])*"?)|(\b\d+(?:\.\d+)?\b)|([A-Za-z_][A-Za-z_0-9]*)|([\s\S])/g;
+  let out = "";
+  let m;
+  while ((m = re.exec(src)) !== null) {
+    const [t, block, line, str, ident, num, word] = m;
+    if (block || line) out += `<span class="sql-c">${esc(t)}</span>`;
+    else if (str) out += `<span class="sql-s">${esc(t)}</span>`;
+    else if (ident) out += `<span class="sql-i">${esc(t)}</span>`;
+    else if (num) out += `<span class="sql-n">${esc(t)}</span>`;
+    else if (word) {
+      out += SQL_KEYWORDS.has(word.toUpperCase()) ? `<span class="sql-k">${esc(t)}</span>` : esc(t);
+    } else out += esc(t);
+  }
+  return out;
+}
+
+/** 背面のハイライトを本文とスクロール位置に追従させる */
+function syncSqlHighlight() {
+  const ta = $("sql-input");
+  const hl = $("sql-hl");
+  if (!ta || !hl) return;
+  // 末尾の改行は <pre> だと潰れて高さがずれるので、1文字ぶん足しておく
+  hl.innerHTML = highlightSql(ta.value) + "\n";
+  hl.scrollTop = ta.scrollTop;
+  hl.scrollLeft = ta.scrollLeft;
+}
+
 async function runSql() {
   const sql = $("sql-input").value.trim();
   if (!sql) return;
@@ -3792,8 +3838,14 @@ function init() {
   $("sql-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); runSql(); }
   });
+  // ハイライトは入力・スクロールのたびに背面へ描き直す
+  $("sql-input").addEventListener("input", syncSqlHighlight);
+  $("sql-input").addEventListener("scroll", syncSqlHighlight);
   $("sql-history").onchange = () => {
-    if ($("sql-history").value) $("sql-input").value = $("sql-history").value;
+    if ($("sql-history").value) {
+      $("sql-input").value = $("sql-history").value;
+      syncSqlHighlight(); // 履歴からの流し込みは input が発火しない
+    }
   };
   $("btn-sql-csv").onclick = exportCsv;
   $("btn-sql-chart").onclick = () => {
@@ -3898,6 +3950,7 @@ function init() {
   window.addEventListener("hashchange", openHashTab);
 
   updateChartFormVisibility();
+  syncSqlHighlight();
   refreshState()
     .then(openHashTab)
     .catch((e) => setStatus(e.message, true));
