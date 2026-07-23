@@ -1176,7 +1176,7 @@ function renderFacetGrid(ctx, w, h, colKeys, rowKeys, colVar, rowVar, drawCell, 
 
 /** 2つの値を格子のキーに合成する(区切りに制御文字を使い衝突を避ける) */
 function cellKey(col, row) {
-  return `${col} ${row}`;
+  return `${col}\u0000${row}`;
 }
 
 /** 上限を超えたカテゴリを先頭 max 件に絞り、必要なら注記を返す */
