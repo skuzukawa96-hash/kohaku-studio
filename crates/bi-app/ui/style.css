@@ -20,6 +20,12 @@
   --ring: rgba(232, 163, 61, .22);  /* フォーカスリング */
   --shadow: rgba(0, 0, 0, .3);
   --overlay: rgba(0, 0, 0, .55);
+  /* SQLエディタのコード配色(UIのブランド色・データの系列色とは分ける) */
+  --code-keyword: #7aa2f7;
+  --code-string: #9ece6a;
+  --code-comment: #6b7484;   /* コメントは目立たせない */
+  --code-number: #e0a15c;
+  --code-ident: #b8c0d4;
   /* チャート用。データの色はブランド色(--accent)と分ける */
   --chart-text: #a8b0be;
   --chart-grid: #313743;
@@ -54,6 +60,11 @@
   --ring: rgba(157, 106, 14, .16);
   --shadow: rgba(15, 20, 30, .1);
   --overlay: rgba(20, 24, 32, .35);
+  --code-keyword: #1d4ed8;
+  --code-string: #15803d;
+  --code-comment: #8892a4;
+  --code-number: #b45309;
+  --code-ident: #3f4a5c;
   --chart-text: #4b5563;
   --chart-grid: #e1e5ec;
   --chart-axis: #aab3c0;
@@ -175,10 +186,47 @@ table.grid tr:nth-child(even) td { background: var(--stripe); }
 
 /* SQL */
 .sql-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
-#sql-input {
-  width: 100%; height: 110px; resize: vertical;
-  font-family: Consolas, "MS Gothic", monospace; font-size: 13px;
+/* SQLエディタ: 背面の #sql-hl(色付き)と前面の #sql-input(透明文字)を
+   完全に同じ字送り・余白で重ねる。ズレると文字が二重に見えるため、
+   フォント/行間/余白/枠線/折り返しは必ず両方に同じ値を当てること。 */
+.sql-editor { position: relative; width: 100%; }
+.sql-editor #sql-hl,
+.sql-editor #sql-input {
+  width: 100%;
+  margin: 0;
+  font-family: Consolas, "MS Gothic", monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 6px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  tab-size: 2;
 }
+#sql-hl {
+  position: absolute; inset: 0;
+  overflow: hidden;              /* スクロール位置は textarea 側に同期させる */
+  background: var(--bg);
+  color: var(--text);
+  pointer-events: none;
+}
+#sql-input {
+  position: relative;
+  display: block;                /* inline のままだとベースラインぶん背面と高さがずれる */
+  height: 110px; resize: vertical;
+  background: transparent;
+  color: transparent;            /* 文字は背面の pre が描く */
+  caret-color: var(--text);      /* カーソルだけは見せる */
+}
+#sql-input::placeholder { color: var(--muted); }
+#sql-input::selection { background: var(--sel); color: transparent; }
+/* コードの配色(テーマ変数から。JSに色を持たせない) */
+.sql-k { color: var(--code-keyword); font-weight: 600; }
+.sql-s { color: var(--code-string); }
+.sql-c { color: var(--code-comment); font-style: italic; }
+.sql-n { color: var(--code-number); }
+.sql-i { color: var(--code-ident); }
 #sql-history { max-width: 300px; }
 
 /* チャート */

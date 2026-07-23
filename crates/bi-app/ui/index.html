@@ -57,7 +57,12 @@
         <button id="btn-sql-chart">結果からチャート作成</button>
         <button id="btn-sql-csv">CSV保存</button>
       </div>
-      <textarea id="sql-input" spellcheck="false" placeholder="SELECT region, SUM(units) AS total FROM sample_sales GROUP BY region ORDER BY total DESC"></textarea>
+      <!-- シンタックスハイライト: 背面の pre に色付きHTMLを描き、前面の
+           textarea は文字を透明にしてカーソルと編集機能だけを担う -->
+      <div class="sql-editor">
+        <pre id="sql-hl" aria-hidden="true"></pre>
+        <textarea id="sql-input" spellcheck="false" placeholder="SELECT region, SUM(units) AS total FROM sample_sales GROUP BY region ORDER BY total DESC"></textarea>
+      </div>
       <div id="sql-msg" class="hint"></div>
       <div id="sql-table" class="table-wrap"></div>
     </section>
