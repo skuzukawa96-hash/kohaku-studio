@@ -128,10 +128,23 @@ APIエンドポイント（`/api/*`）には次のガードがあります。
 
 ## 拡張ポイント
 
-将来のプラグイン機構(Connector / Transform / Chart)の設計は
-[plugin-api-draft.md](plugin-api-draft.md) を参照してください。以下は現在の(再ビルドを伴う)拡張方法です。
+拡張には「再ビルドを伴う方法」と「プラグイン（再ビルド不要）」の2通りがあります。
+プラグイン機構の全体設計は [plugin-api-draft.md](plugin-api-draft.md) を参照してください
+（Connector プラグインは実装済み、Transform / Chart は未着手）。
 
-### 新しいデータソース
+### コネクタプラグイン（再ビルド不要）
+
+`%LOCALAPPDATA%\kohaku-studio\plugins\<name>\plugin.json` を置くと、外部プロセスを
+コネクタとして使えます（`bi-connectors/src/plugin.rs`）。本体とは stdin/stdout の
+JSON 1往復でやりとりするため、実装言語は自由です（サンプルは Python）。
+
+- **既定は無効**。`--enable-plugins` を付けて起動したときだけ読み込む
+  （プラグインは利用者の権限で動く任意コードのため）
+- `--list-plugins` で一覧と疎通確認ができる
+- 入出力は **UTF-8固定**（Windowsでロケール依存の出力が混ざると壊れるため、
+  非UTF-8は専用のエラーで通知する）
+
+### 新しいデータソース（再ビルド）
 
 `bi_core::Connector` trait を実装し、`bi-connectors/src/lib.rs` の
 `ConnectorRegistry::new()` に登録するだけです。UI・エンジン側の変更は不要です。
