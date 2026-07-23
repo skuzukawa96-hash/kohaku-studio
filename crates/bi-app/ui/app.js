@@ -744,6 +744,54 @@ function refreshThemeColors() {
   for (let i = 1; i <= 8; i++) SERIES_COLORS.push(cssVar(`--series-${i}`, "#4f8ef7"));
 }
 
+/** ファセット1パネルに最低限確保する高さ(軸ラベルまで読める大きさ) */
+const FACET_MIN_PANEL_H = 190;
+/** ファセットで伸ばすCanvasの上限(際限なく伸びるのを防ぐ) */
+const FACET_MAX_CANVAS_H = 1600;
+
+/** ファセットの段数を数える(表示上限で打ち切ったあとの実際の段数)。
+ *  0 = ファセットなし。 */
+function facetRowCount(spec, result) {
+  if (!spec.facet) return 0;
+  const reg = CHART_REGISTRY.get(spec.chart_type);
+  const twoD = !!spec.facet2;
+  const uniq = (vals) => new Set(vals.map((v) => (v === null ? "(null)" : String(v)))).size;
+  // 1次元は行数=ceil(パネル数/列数)、2次元は行変数の値の数がそのまま段数
+  const gridRows = (n) => (n ? Math.ceil(n / facetCols(n)) : 0);
+  if (Array.isArray(result.groups)) {
+    // fetch チャート(SPC): サーバーが分割済み
+    if (twoD && result.group2) {
+      return Math.min(uniq(result.groups.map((g) => g.value2)), FACET2_DIM_MAX);
+    }
+    return gridRows(result.groups.length);
+  }
+  const f2i = result.columns ? result.columns.indexOf("f2") : -1;
+  const fi = result.columns ? result.columns.indexOf("f") : -1;
+  if (twoD && f2i >= 0) {
+    return Math.min(uniq(result.rows.map((r) => r[f2i])), FACET2_DIM_MAX);
+  }
+  if (fi >= 0) {
+    const max = (reg && reg.form && reg.form.facetMax) || 12;
+    return gridRows(Math.min(uniq(result.rows.map((r) => r[fi])), max));
+  }
+  return 0;
+}
+
+/** ファセットの段数に応じてCanvasを縦に伸ばす。
+ *  段数で高さを等分するだけだと、3段以上でパネルが潰れて軸ラベルすら
+ *  読めなくなるため、1パネルの最低高さを確保できるところまで伸ばす
+ *  (CSSの既定高さより低くはしない。ファセットなしなら既定へ戻す)。 */
+function fitCanvasToFacets(canvas, spec, result) {
+  canvas.style.height = ""; // まずCSSの既定に戻してから基準の高さを測る
+  const rows = facetRowCount(spec, result);
+  if (rows < 2) return;
+  const base = canvas.clientHeight || 400;
+  // 2次元は上にキャプション+列見出しの帯が乗るぶんを足す
+  const strip = spec.facet2 ? 50 : 12;
+  const need = Math.min(FACET_MAX_CANVAS_H, rows * FACET_MIN_PANEL_H + strip);
+  if (need > base) canvas.style.height = `${need}px`;
+}
+
 function setupCanvas(canvas) {
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth || 600;
@@ -840,6 +888,7 @@ function chartYLabel(spec) {
 }
 
 function renderChart(canvas, spec, result) {
+  fitCanvasToFacets(canvas, spec, result);
   const { ctx, w, h } = setupCanvas(canvas);
   const reg = CHART_REGISTRY.get(spec.chart_type);
   const twoD = !!(spec.facet && spec.facet2);
@@ -1660,10 +1709,17 @@ function drawChartArea(ctx, w, h, spec, result, title, shared) {
   // カテゴリラベル
   ctx.fillStyle = C.text;
   const rotate = cats.length > 8 || cats.some((c) => c.length > 6);
+  const short = (c) => (c.length > 14 ? c.slice(0, 14) + "…" : c);
+  // 間引く本数はカテゴリ数ではなく「実際に確保できる横幅」から決める。
+  // 固定本数だと、ファセットで狭くなったパネルでラベルが重なって潰れる
+  // (斜めラベルは文字高さ÷sin(36°)ぶんの横間隔が要る)
+  const pitch = rotate
+    ? 19
+    : Math.max(...cats.map((c) => ctx.measureText(short(c)).width)) + 10;
+  const stepN = Math.max(1, Math.ceil(pitch / groupW));
   cats.forEach((c, i) => {
     const cx = m.l + i * groupW + groupW / 2;
-    const label = c.length > 14 ? c.slice(0, 14) + "…" : c;
-    const stepN = Math.ceil(cats.length / (rotate ? 30 : 15));
+    const label = short(c);
     if (i % stepN !== 0) return;
     ctx.save();
     ctx.translate(cx, m.t + ph + 6);
