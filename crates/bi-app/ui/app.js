@@ -2069,10 +2069,13 @@ kohaku.registerChartType({
     ctx.textAlign = "left";
     ctx.fillStyle = r.violations.length ? H.colors.danger : H.colors.text;
     const note = hidden.length ? `(${hidden.join("・")}は表示範囲外)` : "";
+    // 行数上限で打ち切られた場合は必ず添える(部分データと気づかずに管理状態を
+    // 判断するのを防ぐ)
+    const cut = r.truncated ? `(先頭${(r.row_limit || 0).toLocaleString()}行のみ)` : "";
     ctx.fillText(
       (r.violations.length
         ? `異常あり — ${parts.join(" / ")}`
-        : `異常なし(σ=${H.fmtTick(r.sigma)}, n=${r.n_used})`) + note,
+        : `異常なし(σ=${H.fmtTick(r.sigma)}, n=${r.n_used})`) + note + cut,
       m.l,
       h - 8
     );
@@ -2265,7 +2268,8 @@ async function runToolDiff() {
     const eff = t.effect
       ? `, ${esc(t.effect.name)}=${fmtNum(t.effect.value, 3)}(${esc(t.effect.magnitude)})`
       : "";
-    let html = `<div class="${t.significant ? "rec-box" : "est-box"}"><b>${
+    let html = truncWarnHtml(r);
+    html += `<div class="${t.significant ? "rec-box" : "est-box"}"><b>${
       t.significant ? "⚠ グループ間に有意差あり" : "グループ間に有意差なし"
     }</b>(${esc(t.name)}, ${esc(t.statistic_name)}=${fmtNum(t.statistic, 3)}, p=${fmtP(t.p_value)}${eff})</div>`;
     // 群別統計(平均の昇順)。有意差ありのとき最下位を赤で強調
@@ -2778,8 +2782,17 @@ async function runProfile() {
 }
 
 /** プロファイル結果のHTML(単独実行・グループ別実行の共通処理) */
+/** 行数上限で打ち切られたときの警告。部分データと気づかずに結論を出すのを防ぐため、
+ *  分析結果の先頭に必ず出す(サーバーが truncated / row_limit を返す)。 */
+function truncWarnHtml(r) {
+  if (!r || !r.truncated) return "";
+  const lim = (r.row_limit || 0).toLocaleString();
+  return `<div class="hint warn-text">データが上限を超えたため、先頭${lim}行だけで分析しています（結果は全体を表していません）</div>`;
+}
+
 function profileSummaryHtml(r) {
   let html = `<div class="hint">${r.n_rows.toLocaleString()}行${r.truncated ? "(上限で打ち切り)" : ""}</div>`;
+  html += truncWarnHtml(r);
   // 列統計
   html += "<h4>列統計</h4>";
   html += '<div class="table-wrap"><table class="grid"><thead><tr><th>列</th><th>型</th><th>件数</th><th>NULL</th><th>個別値</th><th>平均</th><th>標準偏差</th><th>最小</th><th>25%</th><th>中央値</th><th>75%</th><th>最大</th></tr></thead><tbody>';
@@ -2905,7 +2918,8 @@ async function runRegression() {
 
 /** 回帰結果の要約HTML(単独実行・グループ別実行の共通処理) */
 function regSummaryHtml(r) {
-  let html = metricHtml([
+  let html = truncWarnHtml(r);
+  html += metricHtml([
     ["決定係数 R²", fmtNum(r.r2, 4)],
     ["自由度調整済み R²", fmtNum(r.adj_r2, 4)],
     ["RMSE", fmtNum(r.rmse, 4)],
@@ -3092,7 +3106,8 @@ function drawElbowChart(canvas, r) {
 
 /** クラスタリング結果の要約HTML(単独実行・グループ別実行の共通処理) */
 function clusterSummaryHtml(r) {
-  let html = metricHtml([
+  let html = truncWarnHtml(r);
+  html += metricHtml([
     ["クラスタ数", r.k],
     ["使用行数", r.n_used.toLocaleString() + (r.dropped ? `(欠損除外 ${r.dropped})` : "")],
     ["慣性(小さいほど凝集)", fmtNum(r.inertia, 1)],
@@ -3167,7 +3182,8 @@ async function runTimeseries() {
 /** 時系列分解の要約HTML(単独実行・グループ別実行の共通処理) */
 function tsSummaryHtml(r) {
   const judge = (v) => (v >= 0.6 ? "強い" : v >= 0.3 ? "中程度" : "弱い");
-  let html = metricHtml([
+  let html = truncWarnHtml(r);
+  html += metricHtml([
     ["トレンド強度", `${fmtNum(r.trend_strength, 2)}(${judge(r.trend_strength)})`],
     ["季節性強度", `${fmtNum(r.seasonal_strength, 2)}(${judge(r.seasonal_strength)})`],
     ["使用時点数", r.n_used.toLocaleString() + (r.dropped ? `(除外 ${r.dropped}行)` : "")],
