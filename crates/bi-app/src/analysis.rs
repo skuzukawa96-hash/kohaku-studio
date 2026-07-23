@@ -291,6 +291,7 @@ pub fn api_profile(state: &mut AppState, req: &Json) -> BiResult<Json> {
     Ok(json!({
         "n_rows": nrows,
         "truncated": truncated,
+        "row_limit": ANALYZE_LIMIT,
         "columns": columns_out,
         "correlation": {"columns": corr_names, "matrix": matrix},
         "top_pairs": top_pairs,
@@ -353,6 +354,10 @@ pub fn api_regression(state: &mut AppState, req: &Json) -> BiResult<Json> {
     let mut names = vec!["(切片)".to_string()];
     names.extend(features.iter().cloned());
     Ok(json!({
+        // 上限行数で打ち切られたかを必ず伝える(部分データと気づかずに
+        // 結論を出すのを防ぐ)。UI は truncated のとき警告を出す
+        "truncated": result.truncated,
+        "row_limit": ANALYZE_LIMIT,
         "names": names,
         "coef": r.coef.iter().map(|v| round4(*v)).collect::<Vec<_>>(),
         "stderr": r.stderr.iter().map(|v| round4(*v)).collect::<Vec<_>>(),
@@ -449,6 +454,10 @@ pub fn api_timeseries(state: &mut AppState, req: &Json) -> BiResult<Json> {
     let step = (series.len() / 1500).max(1);
     let take = |v: &[f64]| -> Vec<Json> { v.iter().step_by(step).map(|x| round4(*x)).collect() };
     Ok(json!({
+        // 上限行数で打ち切られたかを必ず伝える(部分データと気づかずに
+        // 結論を出すのを防ぐ)。UI は truncated のとき警告を出す
+        "truncated": result.truncated,
+        "row_limit": ANALYZE_LIMIT,
         "labels": labels.iter().step_by(step).collect::<Vec<_>>(),
         "observed": take(&series),
         "trend": take(&r.trend),
@@ -541,6 +550,10 @@ pub fn api_spc(state: &mut AppState, req: &Json) -> BiResult<Json> {
 
     let r = bi_analytics::spc(&series)?;
     Ok(json!({
+        // 上限行数で打ち切られたかを必ず伝える(部分データと気づかずに
+        // 結論を出すのを防ぐ)。UI は truncated のとき警告を出す
+        "truncated": result.truncated,
+        "row_limit": ANALYZE_LIMIT,
         "labels": labels,
         "values": series.iter().map(|v| round4(*v)).collect::<Vec<_>>(),
         "center": round4(r.center),
@@ -865,6 +878,10 @@ pub fn api_tooldiff(state: &mut AppState, req: &Json) -> BiResult<Json> {
         .collect();
 
     Ok(json!({
+        // 上限行数で打ち切られたかを必ず伝える(部分データと気づかずに
+        // 結論を出すのを防ぐ)。UI は truncated のとき警告を出す
+        "truncated": result.truncated,
+        "row_limit": ANALYZE_LIMIT,
         "test": {
             "name": test.test,
             "statistic_name": test.statistic_name,
@@ -914,6 +931,10 @@ pub fn api_cluster_elbow(state: &mut AppState, req: &Json) -> BiResult<Json> {
     let dropped = result.rows.len() - rows.len();
     let r = bi_analytics::elbow(&rows, k_max, 42)?;
     Ok(json!({
+        // 上限行数で打ち切られたかを必ず伝える(部分データと気づかずに
+        // 結論を出すのを防ぐ)。UI は truncated のとき警告を出す
+        "truncated": result.truncated,
+        "row_limit": ANALYZE_LIMIT,
         "ks": r.ks,
         "inertias": r.inertias.iter().map(|v| round4(*v)).collect::<Vec<_>>(),
         "suggested_k": r.suggested_k,
@@ -1020,6 +1041,10 @@ pub fn api_cluster(state: &mut AppState, req: &Json) -> BiResult<Json> {
         .map(|c| c.iter().map(|v| round4(*v)).collect())
         .collect();
     Ok(json!({
+        // 上限行数で打ち切られたかを必ず伝える(部分データと気づかずに
+        // 結論を出すのを防ぐ)。UI は truncated のとき警告を出す
+        "truncated": result.truncated,
+        "row_limit": ANALYZE_LIMIT,
         "k": k,
         "features": features,
         "sizes": km.sizes,
