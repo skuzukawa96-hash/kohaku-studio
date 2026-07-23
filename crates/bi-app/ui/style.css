@@ -26,6 +26,9 @@
   --code-comment: #6b7484;   /* コメントは目立たせない */
   --code-number: #e0a15c;
   --code-ident: #b8c0d4;
+  /* コード選択範囲。前面の textarea に塗るため、背面の色付き文字が
+     透けるよう必ず半透明にする(不透明だと選択した文字が消える) */
+  --sel-code: rgba(232, 163, 61, .30);
   /* チャート用。データの色はブランド色(--accent)と分ける */
   --chart-text: #a8b0be;
   --chart-grid: #313743;
@@ -65,6 +68,7 @@
   --code-comment: #8892a4;
   --code-number: #b45309;
   --code-ident: #3f4a5c;
+  --sel-code: rgba(157, 106, 14, .22);
   --chart-text: #4b5563;
   --chart-grid: #e1e5ec;
   --chart-axis: #aab3c0;
@@ -220,7 +224,10 @@ table.grid tr:nth-child(even) td { background: var(--stripe); }
   caret-color: var(--text);      /* カーソルだけは見せる */
 }
 #sql-input::placeholder { color: var(--muted); }
-#sql-input::selection { background: var(--sel); color: transparent; }
+/* 選択範囲は半透明で塗る。不透明にすると背面の色付き文字が隠れて
+   「選択すると文字が消える」ことになる(文字色は透明のままにして、
+   背面の pre が描いた色付き文字をそのまま透かす) */
+#sql-input::selection { background: var(--sel-code); color: transparent; }
 /* コードの配色(テーマ変数から。JSに色を持たせない) */
 .sql-k { color: var(--code-keyword); font-weight: 600; }
 .sql-s { color: var(--code-string); }
