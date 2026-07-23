@@ -201,9 +201,11 @@ table.grid tr:nth-child(even) td { background: var(--stripe); }
 #chart-list li:hover { background: var(--bg3); }
 #chart-list li.active { background: var(--sel); }
 #chart-list .ch-del { color: var(--danger); border: none; background: none; cursor: pointer; }
-#chart-view { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+#chart-view { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow-y: auto; }
 #chart-view h3 { margin: 0 0 6px; }
-#chart-canvas { width: 100%; height: 400px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; }
+/* ファセットで縦に伸ばした高さを flex に縮められないよう flex: none にする
+   (縮むと1パネルが潰れて軸ラベルが読めなくなる。あふれた分は上でスクロール) */
+#chart-canvas { width: 100%; height: 400px; flex: none; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; }
 
 /* ダッシュボード */
 .dash-filter-label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
