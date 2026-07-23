@@ -113,4 +113,4 @@ gh release create v0.6.0 --title "Kohaku Studio v0.6.0" --generate-notes
 - エラー型は `BiResult<T> = Result<T, String>`。コード内のコメント・エラーメッセージ・ドキュメントは**日本語**で書く（既存コードに合わせる）。
 - ユニットテストは各モジュール内の `#[cfg(test)] mod tests` に置く（コネクタ・エンジン・分析に既存例あり）。
 - 実行時の制限値（インポート200万行、SQL結果表示2,000行など）は README に明記されている。挙動を変える場合は README も更新する。
-- ロードマップは `ROADMAP.md`（現在 v0.9 完了 = X軸の手動レンジ + 2次元ファセット（行×列）+ GUIのミニマル刷新）。v1.0 以降の候補は ROADMAP に記載（Plugin API Phase 2/3、時系列予測）。次の計画はオーナーと相談して決める。
+- ロードマップは `ROADMAP.md`（現在 v0.10 完了 = SQLエディタのシンタックスハイライト + ファセットのパネルサイズ修正）。v1.0 以降の候補は ROADMAP に記載（Plugin API Phase 2/3、時系列予測）。次の計画はオーナーと相談して決める。
