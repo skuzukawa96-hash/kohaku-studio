@@ -4,15 +4,22 @@
 
 # 配布物・ビルド済みバイナリ・生成サンプル
 /dist/
+# `--make-samples` が生成する動作確認用データ(コマンドでいつでも再生成できる)
+/samples/
+
+# プロジェクトファイル(データ本体は含まないが、DB接続URL等が入りうる)
+*.kohaku
 
 # ローカル環境固有のcargo設定(target-dirの絶対パスなど)。
 # 各自の環境に合わせて .cargo/config.toml.example からコピーして作成する。
 /.cargo/config.toml
 
-# エディタ・OS
+# エディタ・OS・ローカルのツール設定
 *.rs.bk
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
 *.swp
+# Claude Code のローカル設定(起動定義・権限など。環境ごとに異なる)
+/.claude/
