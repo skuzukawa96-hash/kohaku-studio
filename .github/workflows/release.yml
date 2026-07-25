@@ -1,0 +1,69 @@
+name: Release
+
+# タグ(v*)を push したときに実行ファイルをビルドして Release に添付する。
+# 手動添付だと忘れるため自動化する。Release 本文は既存のものを使い、
+# ここでは資産の追加だけを行う(下書きのままにはしない)。
+on:
+  push:
+    tags: ["v*"]
+  # タグを押し直した場合などに手動で流せるようにしておく
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "対象のタグ(例: v1.0.0)"
+        required: true
+
+permissions:
+  contents: write # Release への添付に必要
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows (x86_64)
+            bin: kohaku-studio.exe
+            asset: kohaku-studio-windows-x86_64.exe
+          - os: ubuntu-latest
+            label: Linux (x86_64)
+            bin: kohaku-studio
+            asset: kohaku-studio-linux-x86_64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Smoke test
+        # 起動できることだけ確認する(GUIを開かない --make-samples を使う)
+        shell: bash
+        run: |
+          ./target/release/${{ matrix.bin }} --make-samples ./ci-samples
+          test -f ./ci-samples/sample_sales.csv
+
+      - name: Rename artifact
+        shell: bash
+        run: cp "target/release/${{ matrix.bin }}" "${{ matrix.asset }}"
+
+      - name: Upload to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          gh release upload "$TAG" "${{ matrix.asset }}" --clobber --repo "$GITHUB_REPOSITORY"

@@ -1,0 +1,65 @@
+name: バグ報告
+description: 動作がおかしいところを報告する
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        報告ありがとうございます。再現できると修正が早くなるので、分かる範囲で埋めてください
+        （すべて埋まっていなくても構いません）。
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 何が起きたか
+      description: 実際の挙動と、期待していた挙動を書いてください。
+      placeholder: |
+        例: ヒストグラムで「分割: 列」を指定すると、パネルの軸ラベルが重なって読めない。
+        期待: 軸ラベルが読める状態で並ぶ。
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現手順
+      description: 上から順に実行すると再現する手順を書いてください。
+      placeholder: |
+        1. `kohaku-studio --make-samples ./samples` でサンプルを生成
+        2. `sample_sales.csv` をインポート
+        3. チャートタブでタイプ「ヒストグラム」、X列 `units`、分割: 列 `region`
+        4. プレビュー
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: バージョン
+      description: ヘッダーまたは `kohaku-studio --help` で確認できます。
+      placeholder: "v1.0.0"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: 環境
+      description: OS とブラウザを書いてください。
+      placeholder: "Windows 11 / Edge 120"
+
+  - type: textarea
+    id: data
+    attributes:
+      label: データの特徴
+      description: |
+        差し支えなければ、扱っていたデータの規模や列の型を教えてください。
+        **実データそのものは貼らないでください**（公開されます）。
+        `--make-samples` のサンプルで再現する場合はその旨を書いてください。
+      placeholder: "例: 約50万行 × 12列。文字列3列・数値9列。サンプルデータでも再現する。"
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: その他
+      description: スクリーンショットやコンソールのエラーがあれば貼ってください。

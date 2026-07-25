@@ -1,0 +1,42 @@
+name: 機能の提案
+description: 追加してほしい機能や改善を提案する
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提案ありがとうございます。**何を実現したいか**が分かると、実装方法を一緒に考えられます。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 困っていること・やりたいこと
+      description: 解決策ではなく、まず「何に困っているか」を書いてください。
+      placeholder: |
+        例: 装置ごとの歩留まり推移を月単位で比較したいが、
+        今は SQL で月を作ってから分割するしかなく手間がかかる。
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: 考えている解決案（任意）
+      description: 具体案があれば書いてください。なくても構いません。
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 今どうしているか（任意）
+      description: 代わりの手段や、他ツールでの実現方法があれば教えてください。
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        **設計方針について**
+
+        Kohaku Studio は「低スペックPCで軽快に動く」ことを最優先しており、
+        外部ランタイム（Node / WebView / .NET）やJSライブラリへの依存は追加できません。
+        この制約のため、提案をそのままの形では実装できない場合があります
+        （代替案を一緒に検討します）。詳しくは [docs/architecture.md](../blob/main/docs/architecture.md) を参照してください。

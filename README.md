@@ -20,9 +20,21 @@ Webサーバーを起動し、既定のブラウザでUIを開きます。Node /
 
 ## クイックスタート
 
+### ダウンロード（ビルド不要）
+
+[Releases](https://github.com/skuzukawa96-hash/kohaku-studio/releases/latest) から
+実行ファイルをダウンロードするだけで動きます（インストール不要・単一ファイル）。
+
+| OS | ファイル |
+| --- | --- |
+| Windows | `kohaku-studio-windows-x86_64.exe` |
+| Linux | `kohaku-studio-linux-x86_64`（`chmod +x` で実行権限を付けてください） |
+
+ダブルクリック（またはコマンドラインで実行）すると、既定のブラウザでUIが開きます。
+
 ### ビルド
 
-[Rust ツールチェーン](https://rustup.rs/)（stable）が必要です。
+自分でビルドする場合は [Rust ツールチェーン](https://rustup.rs/)（stable）が必要です。
 
 ```bash
 cargo build --release
