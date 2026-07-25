@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 使い方の質問・アイデアの相談
+    url: https://github.com/skuzukawa96-hash/kohaku-studio/discussions
+    about: バグ報告や機能提案に当てはまらない話題はこちらへ（Discussions が有効な場合）。
+  - name: ドキュメント
+    url: https://github.com/skuzukawa96-hash/kohaku-studio#readme
+    about: 使い方・対応データソース・制限事項は README と docs/ にまとまっています。
