@@ -69,8 +69,12 @@ mod imp {
     }
 
     const SIGINT: i32 = 2; // Ctrl+C
-    const SIGTERM: i32 = 15; // kill の既定シグナル
     const STDOUT: i32 = 1;
+
+    // SIGTERM は意図的に既定のままにする。ここで捕まえて終了コード0にすると、
+    // kill やサービス管理ツール・CIによる「外部からの強制終了」まで
+    // 正常終了に見えてしまい、監視側が異常終了を検知できなくなる。
+    // Ctrl+C の対応に必要なのは SIGINT だけ。
 
     /// Unixのシグナルハンドラ内では **async-signal-safe な関数しか呼べない**。
     /// print! は内部でロックを取るため、ロック保持中に割り込むとデッドロック
@@ -90,7 +94,6 @@ mod imp {
         let h = handler as *const () as usize;
         unsafe {
             signal(SIGINT, h);
-            signal(SIGTERM, h);
         }
     }
 }
