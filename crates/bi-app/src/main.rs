@@ -14,6 +14,17 @@ mod analysis;
 mod engine;
 mod server;
 
+// ---------- Ctrl+C での終了 ----------
+// 既定では Ctrl+C がプロセスを異常終了させる(Windowsの終了コードは
+// 0xC000013A = STATUS_CONTROL_C_EXIT)。すると `cargo run` が
+// 「process didn't exit successfully」とエラー表示してしまい、
+// 正常に止めただけなのに失敗したように見える。
+// そこでハンドラを入れ、終了メッセージを出してから正常終了(0)する。
+//
+// 依存を増やさないため、OSのAPIを直接宣言して呼ぶ
+// (Windowsはkernel32、Unixはlibc。いずれも常にリンクされている)。
+mod shutdown;
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut port: u16 = 5590;
@@ -53,6 +64,8 @@ fn main() {
         }
         i += 1;
     }
+    // Ctrl+C を捕まえて正常終了させる(サーバーを動かすときだけでよい)
+    shutdown::install();
     if let Err(e) = server::run(port, open_browser, use_cache, enable_plugins) {
         eprintln!("起動エラー: {e}");
         std::process::exit(1);
