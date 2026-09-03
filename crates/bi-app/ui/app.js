@@ -705,14 +705,18 @@ async function previewChart() {
   $("chart-msg").textContent = "";
   try {
     const r = await chartData(spec);
-    drawChartInto($("chart-canvas"), $("chart-table"), spec, r);
+    drawChartInto($("chart-canvas"), $("chart-table"), spec, r, true);
   } catch (err) {
     $("chart-msg").textContent = err.message;
   }
 }
 
-function drawChartInto(canvas, tableDiv, spec, result) {
-  registerRedraw(canvas, () => drawChartInto(canvas, tableDiv, spec, result));
+/** growForFacets: ファセットの段数に応じてCanvasを縦に伸ばしてよいか。
+ *  チャートプレビューだけ true にする。ダッシュボードのカードはユーザーが
+ *  高さ(小/中/大)を明示的に選んでいるので、そちらを優先する
+ *  (伸ばすとインラインstyleがCSSを上書きし、高さ切替が効かなくなる)。 */
+function drawChartInto(canvas, tableDiv, spec, result, growForFacets) {
+  registerRedraw(canvas, () => drawChartInto(canvas, tableDiv, spec, result, growForFacets));
   if (spec.chart_type === "table") {
     canvas.classList.add("hidden");
     tableDiv.classList.remove("hidden");
@@ -720,7 +724,7 @@ function drawChartInto(canvas, tableDiv, spec, result) {
   } else {
     canvas.classList.remove("hidden");
     tableDiv.classList.add("hidden");
-    renderChart(canvas, spec, result);
+    renderChart(canvas, spec, result, growForFacets);
   }
 }
 
@@ -933,8 +937,8 @@ function chartYLabel(spec) {
   return spec.y || "";
 }
 
-function renderChart(canvas, spec, result) {
-  fitCanvasToFacets(canvas, spec, result);
+function renderChart(canvas, spec, result, growForFacets) {
+  if (growForFacets) fitCanvasToFacets(canvas, spec, result);
   const { ctx, w, h } = setupCanvas(canvas);
   const reg = CHART_REGISTRY.get(spec.chart_type);
   const twoD = !!(spec.facet && spec.facet2);
@@ -2964,7 +2968,14 @@ async function runCluster(saveAs) {
   const req = { source: anGetSource(), features, k };
   if (saveAs) req.save_as = saveAs;
   const group = $("clu-group").value;
-  if (group && !saveAs) {
+  // グループ分割中の保存は塞ぐ。全体を1つの結果として保存してしまい、
+  // 画面の「保存は使えません」という説明と食い違うため
+  // (サーバー側 /api/analyze/group の save_as ガードもここを通ると迂回される)
+  if (group && saveAs) {
+    setStatus("グループ分割中は結果を保存できません(分割を外すか、SQLで絞ってから保存してください)", true);
+    return;
+  }
+  if (group) {
     // グループ別実行では軸の選択・結果の保存は使えない(パネルごとに
     // 別の結果になるため)。散布図は先頭2特徴量で描く
     $("clu-axes-row").classList.add("hidden");
@@ -3020,6 +3031,9 @@ async function suggestClusterK() {
     const r = await api("/api/analyze/elbow", { source: anGetSource(), features, k_max: 10 });
     $("clu-k").value = r.suggested_k;
     out.innerHTML =
+      // 上限行数で打ち切られたときは他の分析と同じ警告を出す
+      // (提案されたkが全データに基づくと誤解させないため)
+      truncWarnHtml(r) +
       metricHtml([
         ["提案されたk", r.suggested_k],
         ["使用行数", r.n_used.toLocaleString() + (r.dropped ? `(欠損除外 ${r.dropped})` : "")],
