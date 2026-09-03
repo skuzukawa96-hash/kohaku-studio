@@ -49,3 +49,8 @@ CREATE TABLE fab.events (
 INSERT INTO fab.events VALUES
     (1, '2026-03-01 08:15:30.123456', '2026-03-01 08:15:30.123456+09'),
     (2, '2026-03-01 08:15:31',        '2026-03-01 08:15:31+09');
+
+-- 名前に '.' を含むテーブル。fab.events とスキーマ修飾を取り違えないことの検証用
+-- (public."fab.events" と fab.events が同時に存在する状況)
+CREATE TABLE public."fab.events" (id integer PRIMARY KEY, note text);
+INSERT INTO public."fab.events" VALUES (1, 'public側のドット入りテーブル');
