@@ -474,6 +474,15 @@ function exportCsv() {
 
 // ---------- チャート ----------
 
+/** その行が今表示されているときだけ値を取る。
+ *  隠れている設定まで保存すると、種類を切り替えたときの残りかすが
+ *  仕様に紛れ込み、あとから別の意味を持ったときに勝手に効いてしまう
+ *  (ヒストグラムの色分けが後から有効になり、既存のグラフが勝手に
+ *   色分けされたのがこの例)。 */
+function visibleValue(rowId, inputId) {
+  return $(rowId).classList.contains("hidden") ? "" : $(inputId).value;
+}
+
 function chartSpecFromForm() {
   return {
     id: editingChartId || Date.now(),
@@ -484,17 +493,17 @@ function chartSpecFromForm() {
       : { kind: "sql", sql: $("ch-sql").value.trim() },
     x: $("ch-x").value,
     y: $("ch-y").value,
-    value: $("ch-value").value,
-    series: $("ch-series").value,
-    facet: $("ch-facet").value,
-    facet2: $("ch-facet2").value,
+    value: visibleValue("ch-value-row", "ch-value"),
+    series: visibleValue("ch-series-row", "ch-series"),
+    facet: visibleValue("ch-facet-row", "ch-facet"),
+    facet2: visibleValue("ch-facet2-row", "ch-facet2"),
     agg: $("ch-agg").value,
     bins: parseInt($("ch-bins").value, 10) || 20,
     // 軸の手動レンジ(空欄なら自動)
-    y_min: $("ch-ymin").value.trim(),
-    y_max: $("ch-ymax").value.trim(),
-    x_min: $("ch-xmin").value.trim(),
-    x_max: $("ch-xmax").value.trim(),
+    y_min: visibleValue("ch-yrange-row", "ch-ymin").trim(),
+    y_max: visibleValue("ch-yrange-row", "ch-ymax").trim(),
+    x_min: visibleValue("ch-xrange-row", "ch-xmin").trim(),
+    x_max: visibleValue("ch-xrange-row", "ch-xmax").trim(),
   };
 }
 
@@ -4011,6 +4020,12 @@ function init() {
   $("btn-ch-new").onclick = () => {
     editingChartId = null;
     $("ch-name").value = "";
+    // 名前だけ消していたため、前のチャートの系列・ファセット・軸レンジが
+    // そのまま残り、意図しない設定で保存されていた
+    for (const id of ["ch-series", "ch-facet", "ch-facet2", "ch-value"]) $(id).value = "";
+    for (const id of ["ch-ymin", "ch-ymax", "ch-xmin", "ch-xmax"]) $(id).value = "";
+    $("ch-bins").value = "20";
+    syncFacet2Enabled();
     renderChartList();
   };
 

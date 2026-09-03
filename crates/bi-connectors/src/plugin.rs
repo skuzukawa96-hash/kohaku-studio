@@ -22,6 +22,10 @@ use std::time::Duration;
 const API_VERSION: u32 = 1;
 /// 応答(stdout)の上限。暴走したプラグインでメモリを食い潰さないための保険
 const MAX_RESPONSE: u64 = 256 * 1024 * 1024;
+/// 応答を読み切ってから子プロセスの終了を待つ上限。
+/// これを超えたら強制終了する(読み手が止まったあとも書き続ける
+/// プラグインで、呼び出しが永久に返らなくなるのを防ぐ)
+const WAIT_AFTER_READ: Duration = Duration::from_secs(2);
 
 // タイムアウト(draft 5.5)
 const TIMEOUT_DESCRIBE: Duration = Duration::from_secs(5);
@@ -127,6 +131,38 @@ pub struct PluginConnector {
     schemes: &'static [&'static str],
 }
 
+/// entry[0] を実際に起動するプログラムへ解決する。
+/// plugin.json の隣に同名の実行ファイルがあればそれを使い、無ければ
+/// そのままPATHから探させる("python" のようなコマンドはこちら)。
+/// Command::new はPATHしか見ず、current_dir は子プロセスの作業ディレクトリを
+/// 変えるだけなので、同梱の実行ファイルは "./" を書かないと起動できなかった。
+fn resolve_program(dir: &Path, entry0: &str) -> PathBuf {
+    let bundled = dir.join(entry0);
+    if bundled.is_file() {
+        bundled
+    } else {
+        PathBuf::from(entry0)
+    }
+}
+
+/// 子プロセスの終了を待つが、上限を超えたら強制終了する。
+/// Child::wait() は無制限に待つため、そのまま呼ぶと固まることがある。
+fn wait_bounded(child: &mut Child, limit: Duration) -> Option<std::process::ExitStatus> {
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => return Some(st),
+            Ok(None) => {}
+            Err(_) => return None,
+        }
+        if start.elapsed() >= limit {
+            let _ = child.kill();
+            return child.wait().ok();
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 impl PluginConnector {
     fn new(manifest: PluginManifest, dir: PathBuf) -> BiResult<Self> {
         if manifest.kind != "connector" {
@@ -216,7 +252,18 @@ impl PluginConnector {
                 ));
             }
         };
-        let status = child.wait().ok();
+        // 応答を読み終えたあと、子プロセスの終了を無制限には待たない。
+        // stdout の上限に達して読み手が止まった場合、子は書き込みで
+        // ブロックしたままになり、wait() が永久に返らない
+        // (APIリクエストがタイムアウトもせずに固まる)
+        let oversized = out.len() as u64 >= MAX_RESPONSE;
+        let status = wait_bounded(&mut child, WAIT_AFTER_READ);
+        if oversized {
+            return Err(format!(
+                "プラグイン「{name}」の応答が大きすぎます(上限 {}MB)",
+                MAX_RESPONSE / (1024 * 1024)
+            ));
+        }
         let err_text = erx
             .recv_timeout(Duration::from_secs(2))
             .map(|b| String::from_utf8_lossy(&b).trim().to_string())
@@ -254,7 +301,7 @@ impl PluginConnector {
     }
 
     fn spawn(&self) -> std::io::Result<Child> {
-        let mut cmd = Command::new(&self.manifest.entry[0]);
+        let mut cmd = Command::new(resolve_program(&self.dir, &self.manifest.entry[0]));
         cmd.args(&self.manifest.entry[1..])
             .current_dir(&self.dir) // entry の相対パスはプラグインのディレクトリ基準
             .stdin(Stdio::piped())
@@ -578,5 +625,67 @@ mod tests {
         let (found, warns) = discover(Path::new("C:/no/such/plugin/dir"));
         assert!(found.is_empty());
         assert!(warns.is_empty()); // 未導入は警告ではない
+    }
+
+    /// 同梱の実行ファイルはプラグインのディレクトリから解決し、
+    /// PATH上のコマンド名はそのまま渡す
+    #[test]
+    fn test_resolve_program() {
+        let dir = std::env::temp_dir().join("kohaku_plugin_resolve_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bundled = dir.join("connector.exe");
+        std::fs::write(&bundled, b"dummy").unwrap();
+
+        assert_eq!(resolve_program(&dir, "connector.exe"), bundled);
+        // ディレクトリに無い名前はPATHへ任せる(そのまま返す)
+        assert_eq!(resolve_program(&dir, "python"), PathBuf::from("python"));
+        // ディレクトリ自体はプログラムとして扱わない
+        std::fs::create_dir_all(dir.join("subdir")).unwrap();
+        assert_eq!(resolve_program(&dir, "subdir"), PathBuf::from("subdir"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// すでに終了しているプロセスは上限まで待たずに返る
+    #[test]
+    fn test_wait_bounded_returns_promptly() {
+        let cmd = if cfg!(windows) { "cmd" } else { "sh" };
+        let args: &[&str] = if cfg!(windows) {
+            &["/C", "exit 0"]
+        } else {
+            &["-c", "exit 0"]
+        };
+        let mut child = Command::new(cmd).args(args).spawn().unwrap();
+        let start = std::time::Instant::now();
+        let st = wait_bounded(&mut child, Duration::from_secs(5));
+        assert!(st.is_some());
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+
+    /// 読み終えたあとも動き続けるプロセスは、上限で打ち切って強制終了する
+    /// (これが無いと wait() が返らず、APIリクエストが固まる)
+    #[test]
+    fn test_wait_bounded_kills_lingering_process() {
+        let cmd = if cfg!(windows) { "cmd" } else { "sh" };
+        let args: &[&str] = if cfg!(windows) {
+            &["/C", "ping -n 30 127.0.0.1 > NUL"]
+        } else {
+            &["-c", "sleep 30"]
+        };
+        let mut child = Command::new(cmd).args(args).spawn().unwrap();
+        let start = std::time::Instant::now();
+        let st = wait_bounded(&mut child, Duration::from_millis(200));
+        assert!(st.is_some(), "強制終了後の状態を取れていない");
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            start.elapsed()
+        );
+        // 実際に終了していること
+        assert!(child.try_wait().is_ok());
     }
 }
