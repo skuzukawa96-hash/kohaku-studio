@@ -53,6 +53,10 @@ function applyTheme(name) {
       REDRAW.delete(canvas);
       continue;
     }
+    // 非表示のCanvasは描き直さない。再描画関数は classList.remove("hidden") を
+    // 含むため、テーマを切り替えただけで「分析に失敗して隠したはずの前のグラフ」が
+    // エラー表示の隣に復活してしまう。再表示は必ず描画を伴うので飛ばしてよい
+    if (canvas.classList.contains("hidden")) continue;
     try {
       fn();
     } catch (e) {
@@ -149,6 +153,11 @@ async function refreshState() {
   renderAnDatasetSelect();
   renderLotColSelect();
   renderHistory(st.queries || []);
+  // 同名で再インポートするとサーバー側の中身だけ入れ替わる。キャッシュを
+  // 残すとダッシュボードが古い行を描き続け、SQLチャートの列一覧も古いままで
+  // 新しく増えた列がフィルタで「対象外」になる
+  dashCache.clear();
+  dashSourceCols.clear();
   // データセット一覧が変わった可能性があるため、チャートの列セレクトも追随させる。
   // これを怠ると「インポート直後にソースを切り替えるまでX列/Y列が選べない」状態になる
   await loadChartColumns();
@@ -229,6 +238,17 @@ function impMode(mode) {
   $("imp-msg").textContent = "";
 }
 
+/** DBインポートの選択状態を捨てて設定欄を隠す */
+function resetDbImportState() {
+  imp.path = "";
+  imp.connector = "";
+  imp.objects = [];
+  $("imp-config").classList.add("hidden");
+  $("imp-object").innerHTML = "";
+  $("imp-preview").innerHTML = "";
+  $("imp-msg").textContent = "";
+}
+
 /** DB接続URLからテーブル一覧を取得してインポート設定を表示する */
 async function connectDb() {
   const url = $("imp-db-url").value.trim();
@@ -236,6 +256,10 @@ async function connectDb() {
     $("imp-db-msg").textContent = "接続URLを入力してください";
     return;
   }
+  // 前の接続の状態を先に捨てる。残したままだと、別のDBへの接続に失敗しても
+  // 前のDBのテーブル一覧が表示されたままになり、URL欄と違うDBから
+  // 取り込んでしまう
+  resetDbImportState();
   $("imp-db-msg").textContent = "接続中...";
   try {
     const r = await api("/api/objects", { path: url });
@@ -608,7 +632,7 @@ async function loadChartColumns() {
     } else {
       const sql = stripSemi($("ch-sql").value);
       if (sql) {
-        const r = await api("/api/query", { sql: `SELECT * FROM (${sql}) LIMIT 1`, limit: 1 });
+        const r = await api("/api/query", { sql: `SELECT * FROM (${sql}) LIMIT 1`, limit: 1, record: false });
         cols = r.columns;
       }
     }
@@ -699,6 +723,11 @@ async function chartData(spec, filters) {
   return api("/api/query", { sql: buildChartQuery(spec, filters), limit: 100000 });
 }
 
+/** 最後にプレビューが成功したときの spec。PNG保存はこれを使う。
+ *  フォームを編集しただけではCanvasの中身は変わらないので、保存時に
+ *  フォームから作り直すと画像と題名・ファイル名が食い違う。 */
+let lastPreviewSpec = null;
+
 async function previewChart() {
   const spec = chartSpecFromForm();
   $("chart-title").textContent = spec.name;
@@ -706,6 +735,7 @@ async function previewChart() {
   try {
     const r = await chartData(spec);
     drawChartInto($("chart-canvas"), $("chart-table"), spec, r, true);
+    lastPreviewSpec = spec;
   } catch (err) {
     $("chart-msg").textContent = err.message;
   }
@@ -2448,7 +2478,7 @@ async function anLoadColumns() {
     } else {
       const sql = stripSemi($("an-sql").value);
       if (sql) {
-        const r = await api("/api/query", { sql: `SELECT * FROM (${sql}) LIMIT 100`, limit: 100 });
+        const r = await api("/api/query", { sql: `SELECT * FROM (${sql}) LIMIT 100`, limit: 100, record: false });
         anColumns = r.columns.map((name, i) => {
           let numeric = false;
           for (const row of r.rows) {
@@ -3548,7 +3578,7 @@ async function chartSourceCols(spec) {
   const key = "sql:" + spec.id;
   if (dashSourceCols.has(key)) return dashSourceCols.get(key);
   try {
-    const r = await api("/api/query", { sql: `SELECT * FROM (${chartBaseSql(spec)}) LIMIT 1`, limit: 1 });
+    const r = await api("/api/query", { sql: `SELECT * FROM (${chartBaseSql(spec)}) LIMIT 1`, limit: 1, record: false });
     dashSourceCols.set(key, r.columns);
     return r.columns;
   } catch (e) {
@@ -3703,7 +3733,12 @@ function opaquePngDataUrl(canvas) {
 /** チャートタブ: プレビュー中のチャートをタイトル付きPNGで保存 */
 function exportChartPng() {
   const canvas = $("chart-canvas");
-  const spec = chartSpecFromForm();
+  // 画像はプレビュー時のもの。spec もそのときのものを使う
+  const spec = lastPreviewSpec;
+  if (!spec) {
+    setStatus("先にプレビューを実行してください", true);
+    return;
+  }
   if (spec.chart_type === "table") {
     setStatus("テーブルはPNGに対応していません(ダッシュボードのHTMLレポートを使ってください)", true);
     return;
