@@ -79,8 +79,30 @@ pub fn advise_numeric_groups(
     let mut warnings = vec![];
     let mut assumptions = vec![];
 
-    // 前提: 正規性(プール残差)
-    let normality = pooled_normality(groups);
+    // 前提: 正規性。
+    // 対応ありの2群だけは「差」の分布で見る。対応のあるt検定が仮定するのは
+    // 各測定の分布ではなく差の分布なので、元の列が非正規でも差が正規なら
+    // 妥当(逆に、元が正規でも差が非正規なら不適切)。
+    let paired_diff: Option<Vec<f64>> =
+        if paired && k == 2 && groups[0].1.len() == groups[1].1.len() {
+            Some(
+                groups[0]
+                    .1
+                    .iter()
+                    .zip(groups[1].1.iter())
+                    .map(|(a, b)| a - b)
+                    .collect(),
+            )
+        } else {
+            None
+        };
+    let normality = match &paired_diff {
+        Some(d) => htest::jarque_bera(d).map(|a| AssumptionCheck {
+            name: format!("{} [差]", a.name),
+            ..a
+        }),
+        None => pooled_normality(groups),
+    };
     let normal_ok = normality.as_ref().map(|a| a.passed).unwrap_or(true);
     if let Some(a) = normality {
         assumptions.push(a);
@@ -94,6 +116,19 @@ pub fn advise_numeric_groups(
 
     if paired && k == 2 {
         // 対応あり2群
+        if paired_diff.is_none() {
+            // 件数が違うと行同士を対応付けられない。検定自体も実行できないので
+            // 黙って群内偏差で代用したことを明示する
+            warnings.push(
+                "2群の件数が一致しないため対応付けができません。正規性は群内偏差で代用しています。"
+                    .to_string(),
+            );
+        }
+        let normal_label = if paired_diff.is_some() {
+            "差の正規性"
+        } else {
+            "残差の正規性"
+        };
         let (primary, primary_label, alt) = if normal_ok {
             (
                 "paired_t",
@@ -101,10 +136,9 @@ pub fn advise_numeric_groups(
                 vec![opt("wilcoxon", "Wilcoxon符号付順位検定")],
             )
         } else {
-            reasons.push(
-                "残差の正規性に疑いがあるため、ノンパラメトリックを第一候補にしました。"
-                    .to_string(),
-            );
+            reasons.push(format!(
+                "{normal_label}に疑いがあるため、ノンパラメトリックを第一候補にしました。"
+            ));
             (
                 "wilcoxon",
                 "Wilcoxon符号付順位検定",
@@ -112,6 +146,12 @@ pub fn advise_numeric_groups(
             )
         };
         reasons.push("同一対象の2測定(before/after)として対応ありで比較します。".to_string());
+        if paired_diff.is_some() {
+            reasons.push(
+                "正規性は各測定ではなく2測定の「差」で確認しています(対応のあるt検定が仮定するのは差の分布のため)。"
+                    .to_string(),
+            );
+        }
         return Ok(Recommendation {
             intent: "対応する2測定の差の検定".to_string(),
             primary: primary.to_string(),
@@ -402,11 +442,19 @@ pub fn advise_categorical(table: &[Vec<f64>]) -> Result<Recommendation, String> 
         return Err("2行以上必要です".to_string());
     }
     let cols = table[0].len();
+    // 実行側(htest::chi_square_independence)と同じ条件でここでも弾く。
+    // 通してしまうと「提案された検定が実行時に失敗する」行き止まりになる
+    if cols < 2 || table.iter().any(|r| r.len() != cols) {
+        return Err("2列以上・矩形の表が必要です".to_string());
+    }
     let row_sums: Vec<f64> = table.iter().map(|r| r.iter().sum()).collect();
     let col_sums: Vec<f64> = (0..cols)
         .map(|c| table.iter().map(|r| r[c]).sum())
         .collect();
     let total: f64 = row_sums.iter().sum();
+    if total == 0.0 {
+        return Err("度数の合計が0です".to_string());
+    }
     let mut small = 0;
     for &rs in &row_sums {
         for &cs in &col_sums {
@@ -454,4 +502,89 @@ pub fn advise_categorical(table: &[Vec<f64>]) -> Result<Recommendation, String> 
         group_summaries: vec![],
         available,
     })
+}
+
+// ---------- テスト ----------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 決定的な擬似正規乱数(線形合同法 + Box-Muller)。
+    /// 外部依存を増やさずに、正規分布に従う標本をテストで再現するために使う
+    fn normal_sample(n: usize, seed: u64) -> Vec<f64> {
+        let mut st = seed;
+        let mut uniform = move || {
+            st = st
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            // (0,1) の開区間に収める(ln(0) を避ける)
+            ((st >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+        };
+        (0..n)
+            .map(|_| {
+                let (u1, u2) = (uniform(), uniform());
+                (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+            })
+            .collect()
+    }
+
+    /// 各測定は強く歪んでいるが、差は正規分布に従うデータ。
+    /// 対応のあるt検定の仮定は差の正規性なので paired_t が第一候補になる
+    /// (群内偏差で判定していた頃は wilcoxon になっていた)
+    #[test]
+    fn test_paired_normality_uses_differences() {
+        let noise = normal_sample(40, 20260904);
+        let base: Vec<f64> = (0..40).map(|i| (i as f64 / 5.0).exp()).collect();
+        let after: Vec<f64> = base.iter().zip(&noise).map(|(b, e)| b + e).collect();
+        let groups = vec![("前".to_string(), base.clone()), ("後".to_string(), after)];
+
+        // 前提: 元の列はプールすると正規性が棄却されるほど歪んでいる
+        let pooled = pooled_normality(&groups).unwrap();
+        assert!(!pooled.passed, "テストデータが歪んでいない: {pooled:?}");
+
+        let rec = advise_numeric_groups(&groups, true).unwrap();
+        assert_eq!(rec.primary, "paired_t", "{:?}", rec.assumptions);
+        // 正規性の判定が「差」に対して行われたことを表示にも出す
+        assert!(rec.assumptions.iter().any(|a| a.name.contains("[差]")));
+        assert!(rec.reasons.iter().any(|r| r.contains("差")));
+    }
+
+    /// 対応なしでは従来どおり群内偏差(残差)で判定する
+    #[test]
+    fn test_unpaired_normality_uses_pooled_residuals() {
+        let base: Vec<f64> = (0..40).map(|i| (i as f64 / 5.0).exp()).collect();
+        let groups = vec![("A".to_string(), base.clone()), ("B".to_string(), base)];
+        let rec = advise_numeric_groups(&groups, false).unwrap();
+        assert!(rec.assumptions.iter().all(|a| !a.name.contains("[差]")));
+        assert_eq!(rec.primary, "mann_whitney");
+    }
+
+    /// 件数が違うと対応付けできない。黙って代用せず警告を出す
+    #[test]
+    fn test_paired_length_mismatch_warns() {
+        let groups = vec![
+            ("前".to_string(), (0..12).map(|i| i as f64).collect()),
+            ("後".to_string(), (0..10).map(|i| i as f64).collect()),
+        ];
+        let rec = advise_numeric_groups(&groups, true).unwrap();
+        assert!(rec.warnings.iter().any(|w| w.contains("対応付け")));
+    }
+
+    /// 列が1種類しかないクロス集計表は、実行側と同じ理由でここでも弾く
+    /// (通すと「提案された検定が実行時に失敗する」行き止まりになる)
+    #[test]
+    fn test_categorical_rejects_one_dimensional_table() {
+        let e = advise_categorical(&[vec![10.0], vec![20.0], vec![5.0]]).unwrap_err();
+        assert!(e.contains("2列以上"), "{e}");
+        // 行数不足も従来どおり弾く
+        assert!(advise_categorical(&[vec![1.0, 2.0]]).is_err());
+        // 行ごとに列数が違う表も弾く
+        assert!(advise_categorical(&[vec![1.0, 2.0], vec![3.0]]).is_err());
+        // 度数が全部0なら期待度数を計算できない
+        assert!(advise_categorical(&[vec![0.0, 0.0], vec![0.0, 0.0]]).is_err());
+        // 正常な2×2は通る
+        let rec = advise_categorical(&[vec![30.0, 20.0], vec![25.0, 35.0]]).unwrap();
+        assert_eq!(rec.primary, "chi_square");
+    }
 }

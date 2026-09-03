@@ -877,11 +877,18 @@ pub fn api_tooldiff(state: &mut AppState, req: &Json) -> BiResult<Json> {
         })
         .collect();
 
+    // 全体平均は全観測値から求める。ストリップ図に渡す points は
+    // 最大200点/群に間引くので、間引き後の点から計算すると群のサイズ比が
+    // 崩れ(n=20,000 と n=200 がどちらも200点になる)、実際の水準とずれる
+    let total_n: usize = groups.iter().map(|(_, v)| v.len()).sum();
+    let overall_mean = groups.iter().flat_map(|(_, v)| v.iter()).sum::<f64>() / total_n as f64;
+
     Ok(json!({
         // 上限行数で打ち切られたかを必ず伝える(部分データと気づかずに
         // 結論を出すのを防ぐ)。UI は truncated のとき警告を出す
         "truncated": result.truncated,
         "row_limit": ANALYZE_LIMIT,
+        "overall_mean": round4(overall_mean),
         "test": {
             "name": test.test,
             "statistic_name": test.statistic_name,
@@ -1441,12 +1448,26 @@ pub fn api_test(state: &mut AppState, req: &Json) -> BiResult<Json> {
     let res = run_named_test(&id, &result, req, alpha)?;
     let correction = Correction::from_name(&s(req, "correction"));
 
-    // 3群以上で分散分析/Kruskalが有意なら、事後のペアワイズ比較を付ける
-    let posthoc = if matches!(id.as_str(), "anova" | "welch_anova" | "kruskal") {
+    // 3群以上で分散分析/Kruskalが有意なときだけ、事後のペアワイズ比較を付ける。
+    // 全体の検定が有意でないのにペアごとのp値を見せると、本来開くべきでない
+    // 比較を解釈させてしまい、偽陽性(第1種の誤り)が増える。
+    // 省いたときは理由を返し、「なぜ出ないのか」が分かるようにする
+    let is_omnibus = matches!(id.as_str(), "anova" | "welch_anova" | "kruskal");
+    let (posthoc, posthoc_note) = if !is_omnibus {
+        (Json::Null, Json::Null)
+    } else if res.p_value < alpha {
         let parametric = id != "kruskal";
-        posthoc_pairs(&result, req, parametric, alpha, correction)?
+        (
+            posthoc_pairs(&result, req, parametric, alpha, correction)?,
+            Json::Null,
+        )
     } else {
-        Json::Null
+        (
+            Json::Null,
+            json!(
+                "全体の検定が有意ではない(p≧有意水準)ため、事後のペアワイズ比較は行いません。有意でない全体検定のあとにペアを見比べると、偶然の差を有意と誤認しやすくなります。"
+            ),
+        )
     };
 
     let correction_label = match correction {
@@ -1464,6 +1485,7 @@ pub fn api_test(state: &mut AppState, req: &Json) -> BiResult<Json> {
     Ok(json!({
         "result": serde_json::to_value(&res).map_err(|e| e.to_string())?,
         "posthoc": posthoc,
+        "posthoc_note": posthoc_note,
         "correction": correction_label,
         "power": power,
         "note": "この結果は探索的分析です。事前に仮説・指標・検定を決めていない場合、確証的な結論には追試が必要です。",
@@ -2151,6 +2173,94 @@ mod tests {
             &json!({"source": ds("td3"), "group": "v", "value": "v"})
         )
         .is_err());
+    }
+
+    /// 全体平均は間引き前の全観測値から求める。群のサイズが大きく違うとき、
+    /// 表示点(最大200点/群)から計算した平均とは一致しない
+    #[test]
+    fn test_tooldiff_overall_mean_uses_all_rows() {
+        let mut rows: Vec<Vec<Value>> = Vec::new();
+        // 大きい群 1000行(平均10.0)と小さい群 10行(平均0.0)
+        for i in 0..1000 {
+            let v = 10.0 + if i % 2 == 0 { -0.1 } else { 0.1 };
+            rows.push(vec![Value::Text("big".into()), Value::Float(v)]);
+        }
+        for i in 0..10 {
+            let v = if i % 2 == 0 { -0.1 } else { 0.1 };
+            rows.push(vec![Value::Text("small".into()), Value::Float(v)]);
+        }
+        let mut st = state_with(
+            "td4",
+            &[("g", DataType::Utf8), ("v", DataType::Float64)],
+            rows,
+        );
+        let r = api_tooldiff(
+            &mut st,
+            &json!({"source": ds("td4"), "group": "g", "value": "v"}),
+        )
+        .unwrap();
+
+        // 真の全体平均 = (1000*10.0 + 10*0.0) / 1010
+        let expected = 10_000.0 / 1010.0;
+        let got = r["overall_mean"].as_f64().unwrap();
+        assert!((got - expected).abs() < 1e-3, "overall_mean={got}");
+
+        // 表示点は間引かれており、そこから平均すると別の値になる
+        // (間引き後は 200点 対 10点 になり、群のサイズ比 100:1 が崩れる)
+        let pts: Vec<f64> = r["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| f64s(&g["points"]))
+            .collect();
+        assert_eq!(pts.len(), 210);
+        let from_points = pts.iter().sum::<f64>() / pts.len() as f64;
+        assert!(
+            (from_points - got).abs() > 0.3,
+            "間引き後の平均({from_points})と全体平均({got})が近すぎてテストの意味がない"
+        );
+    }
+
+    // ---------- 検定API(事後比較のゲート) ----------
+
+    /// 3群のデータを ANOVA にかけ、(事後比較, 事後比較を省いた理由) を返す
+    fn anova_posthoc(bases: [f64; 3]) -> (Json, Json) {
+        let mut rows: Vec<Vec<Value>> = Vec::new();
+        for (gi, base) in bases.iter().enumerate() {
+            let label = format!("G{gi}");
+            for i in 0..12 {
+                // 群内に一定のばらつきを持たせる(分散0だと検定できない)
+                let v = base + (i % 4) as f64 * 0.5 - 0.75;
+                rows.push(vec![Value::Text(label.clone()), Value::Float(v)]);
+            }
+        }
+        let name = format!("an{}", bases[2] as i64);
+        let mut st = state_with(
+            &name,
+            &[("g", DataType::Utf8), ("v", DataType::Float64)],
+            rows,
+        );
+        let r = api_test(
+            &mut st,
+            &json!({"source": ds(&name), "mode": "groups", "test": "anova", "target": "v", "group": "g"}),
+        )
+        .unwrap();
+        (r["posthoc"].clone(), r["posthoc_note"].clone())
+    }
+
+    /// 全体の検定が有意なときだけ事後のペアワイズ比較を返す。
+    /// 有意でないときは省いた理由を返す(黙って消さない)
+    #[test]
+    fn test_posthoc_gated_on_omnibus() {
+        // 群平均が大きく離れている → 有意 → 3ペア返る
+        let (posthoc, note) = anova_posthoc([10.0, 20.0, 30.0]);
+        assert_eq!(posthoc["pairs"].as_array().unwrap().len(), 3);
+        assert!(note.is_null());
+
+        // 群平均がほぼ同じ → 有意でない → 事後比較なし + 理由あり
+        let (posthoc, note) = anova_posthoc([10.0, 10.0, 10.0]);
+        assert!(posthoc.is_null(), "{posthoc}");
+        assert!(note.as_str().unwrap().contains("有意ではない"), "{note}");
     }
 
     // ---------- ロットトレースAPI ----------

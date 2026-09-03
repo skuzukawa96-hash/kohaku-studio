@@ -2276,15 +2276,35 @@ async function runToolDiff() {
     html += `<div class="${t.significant ? "rec-box" : "est-box"}"><b>${
       t.significant ? "⚠ グループ間に有意差あり" : "グループ間に有意差なし"
     }</b>(${esc(t.name)}, ${esc(t.statistic_name)}=${fmtNum(t.statistic, 3)}, p=${fmtP(t.p_value)}${eff})</div>`;
-    // 群別統計(平均の昇順)。有意差ありのとき最下位を赤で強調
+    // 群別統計(平均の昇順)。有意差のあるペアに現れた群にだけ印を付ける。
+    // 平均が最下位の群を自動的に赤くしない:
+    //   (1) 全体の検定が有意でも、その群が有意なペアに入っているとは限らない
+    //   (2) 測定値の良し悪しの向きはデータから決まらない
+    //       (欠陥数のように低い方が良いこともある)
+    const diffLabels = new Set();
+    if (Array.isArray(r.pairs)) {
+      for (const p of r.pairs) {
+        if (p.significant) {
+          diffLabels.add(p.a);
+          diffLabels.add(p.b);
+        }
+      }
+    } else if (t.significant && r.groups.length === 2) {
+      // 2群のときはペア一覧が無く、全体の検定がそのまま唯一のペアの検定になる
+      for (const g of r.groups) diffLabels.add(g.label);
+    }
     const gs = [...r.groups].sort((a, b) => a.mean - b.mean);
     html +=
       '<div class="table-wrap"><table class="grid"><thead><tr><th>グループ</th><th>n</th><th>平均</th><th>SD</th><th>最小</th><th>最大</th></tr></thead><tbody>';
-    gs.forEach((g, i) => {
-      const mark = i === 0 && t.significant ? ' style="color:var(--danger)"' : "";
-      html += `<tr${mark}><td>${esc(g.label)}</td><td class="num">${g.n.toLocaleString()}</td><td class="num">${fmtNum(g.mean, 3)}</td><td class="num">${fmtNum(g.sd, 3)}</td><td class="num">${fmtNum(g.min, 3)}</td><td class="num">${fmtNum(g.max, 3)}</td></tr>`;
+    gs.forEach((g) => {
+      const tag = diffLabels.has(g.label) ? ' <span class="tag">差あり</span>' : "";
+      html += `<tr><td>${esc(g.label)}${tag}</td><td class="num">${g.n.toLocaleString()}</td><td class="num">${fmtNum(g.mean, 3)}</td><td class="num">${fmtNum(g.sd, 3)}</td><td class="num">${fmtNum(g.min, 3)}</td><td class="num">${fmtNum(g.max, 3)}</td></tr>`;
     });
     html += "</tbody></table></div>";
+    if (diffLabels.size) {
+      html +=
+        '<div class="hint">「差あり」は有意差のあるペアに含まれる群です。どちらが良いかは測定値の意味(高い方が良いか低い方が良いか)によるため、ここでは判定しません。</div>';
+    }
     if (Array.isArray(r.pairs)) {
       const sig = r.pairs.filter((p) => p.significant);
       html += sig.length
@@ -2299,7 +2319,7 @@ async function runToolDiff() {
       html += `<div class="hint">検定から除外(3点未満): ${esc(r.dropped_small.join(", "))}</div>`;
     }
     out.innerHTML = html;
-    drawStripPlot($("tool-canvas"), r.groups);
+    drawStripPlot($("tool-canvas"), r.groups, r.overall_mean);
   } catch (e) {
     $("tool-canvas").classList.add("hidden");
     out.innerHTML = `<div class="hint error">${esc(e.message)}</div>`;
@@ -2307,8 +2327,8 @@ async function runToolDiff() {
 }
 
 /** ストリップ図: グループごとの測定値の分布をジッター付きの点で示す */
-function drawStripPlot(canvas, groups) {
-  registerRedraw(canvas, () => drawStripPlot(canvas, groups));
+function drawStripPlot(canvas, groups, overallMean) {
+  registerRedraw(canvas, () => drawStripPlot(canvas, groups, overallMean));
   canvas.classList.remove("hidden");
   const { ctx, w, h } = setupCanvas(canvas);
   const C = CHART_COLORS;
@@ -2316,7 +2336,8 @@ function drawStripPlot(canvas, groups) {
   const pw = w - m.l - m.r;
   const ph = h - m.t - m.b;
   const all = groups.flatMap((g) => g.points);
-  const ticks = niceTicks(Math.min(...all), Math.max(...all), 5);
+  // 全体平均の破線が枠外へ出ないよう、軸レンジの計算に含める
+  const ticks = niceTicks(Math.min(...all, overallMean), Math.max(...all, overallMean), 5);
   const yMin = ticks[0];
   const yMax = ticks[ticks.length - 1];
   const py = (v) => m.t + ph - ((v - yMin) / (yMax - yMin || 1)) * ph;
@@ -2332,13 +2353,14 @@ function drawStripPlot(canvas, groups) {
     ctx.stroke();
     ctx.fillText(fmtTick(t), m.l - 6, py(t) + 4);
   }
-  // 全体平均(表示点の単純平均)の破線
-  const total = all.reduce((a, b) => a + b, 0) / all.length;
+  // 全体平均の破線。サーバーが全観測値から計算した値を使う
+  // (下の点は最大200点/群に間引くので、点から平均すると群のサイズ比が
+  //  崩れて実際の水準とずれる)
   ctx.strokeStyle = C.accent2;
   ctx.setLineDash([4, 4]);
   ctx.beginPath();
-  ctx.moveTo(m.l, py(total));
-  ctx.lineTo(m.l + pw, py(total));
+  ctx.moveTo(m.l, py(overallMean));
+  ctx.lineTo(m.l + pw, py(overallMean));
   ctx.stroke();
   ctx.setLineDash([]);
 
@@ -2374,7 +2396,20 @@ function drawStripPlot(canvas, groups) {
   groups.forEach((g, gi) => ctx.fillText(g.label, gx(gi), m.t + ph + 16, pw / groups.length - 8));
   ctx.textAlign = "left";
   ctx.fillStyle = C.accent2;
-  ctx.fillText("--- 全体平均", m.l + 4, m.t - 4);
+  const legend = "--- 全体平均(全データ)";
+  ctx.fillText(legend, m.l + 4, m.t - 4);
+  // 間引いたときは明示する。破線が描かれた点の中心とずれて見えるため。
+  // 幅が足りず凡例と重なるときは描かない(文字が重なるくらいなら出さない)
+  if (groups.some((g) => g.points.length < g.n)) {
+    const note = "点は最大200点/群に間引き表示";
+    const room = m.l + pw - ctx.measureText(note).width - (m.l + 4 + ctx.measureText(legend).width);
+    if (room > 12) {
+      ctx.fillStyle = C.muted;
+      ctx.textAlign = "right";
+      ctx.fillText(note, m.l + pw, m.t - 4);
+      ctx.textAlign = "left";
+    }
+  }
 }
 
 function anGetSource() {
@@ -2688,6 +2723,8 @@ async function tstRun() {
         html += `<tr><td>${esc(p.a)}</td><td>${esc(p.b)}</td><td class="num">${fmtNum(p.statistic, 3)}</td><td class="num">${fmtNum(p.effect, 3)}</td><td class="num">${fmtP(p.p)}</td><td class="num">${fmtP(p.p_adjusted)}</td><td>${mark}</td></tr>`;
       }
       html += "</tbody></table></div>";
+    } else if (r.posthoc_note) {
+      html += `<div class="hint">${esc(r.posthoc_note)}</div>`;
     }
     html += `<div class="hint" style="margin-top:8px">${esc(r.note)}</div>`;
     out.innerHTML = html;
@@ -2729,6 +2766,8 @@ function tstMarkdown() {
     lines.push("", `### 事後のペアワイズ比較(${ph.method} / 補正: ${lt.resp.correction})`);
     lines.push("| 群A | 群B | 統計量 | 効果量 | p | p(補正後) | 有意 |", "|---|---|---|---|---|---|---|");
     for (const x of ph.pairs) lines.push(`| ${x.a} | ${x.b} | ${x.statistic} | ${x.effect ?? "—"} | ${p(x.p)} | ${p(x.p_adjusted)} | ${x.significant ? "✔" : ""} |`);
+  } else if (lt.resp.posthoc_note) {
+    lines.push("", `### 事後のペアワイズ比較`, lt.resp.posthoc_note);
   }
   lines.push("", `> 解釈: ${t.interpretation}`, `> ${lt.resp.note}`, "", `_Kohaku Test Advisor / ${new Date().toISOString().slice(0, 10)}_`);
   return lines.join("\n");
