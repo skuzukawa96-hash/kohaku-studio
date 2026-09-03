@@ -348,6 +348,13 @@ table.corr td.diag { color: var(--muted); }
 .ok-text { color: var(--ok); }
 .warn-text { color: var(--warn); }
 .danger-text { color: var(--danger); }
+/* 表の行に付ける小さな注記(「差あり」など)。良し悪しの判断は含めないため、
+   danger(赤)ではなく中立の配色にする */
+.tag {
+  display: inline-block; font-size: 10px; line-height: 1.6; padding: 0 5px;
+  border: 1px solid var(--border-strong); border-radius: 3px;
+  color: var(--muted); vertical-align: 1px;
+}
 
 #status {
   padding: 4px 12px; background: var(--bg2);
