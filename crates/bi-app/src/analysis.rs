@@ -826,8 +826,12 @@ pub fn api_tooldiff(state: &mut AppState, req: &Json) -> BiResult<Json> {
         gs.label = label.clone();
     }
 
-    // 3群以上はペアワイズ事後比較(Welch t + Holm補正)
-    let pairs: Json = if groups.len() >= 3 {
+    // 3群以上はペアワイズ事後比較(Welch t + Holm補正)。
+    // ただし全体の検定が有意なときだけ行う(api_test と同じ理由)。
+    // 常に出していると、「グループ間に有意差なし」と表示しながら
+    // 有意なペアを並べる、という食い違いが起きうる
+    let significant = test.p_value < alpha;
+    let pairs: Json = if groups.len() >= 3 && significant {
         let mut names: Vec<(String, String)> = Vec::new();
         let mut raw_p: Vec<f64> = Vec::new();
         let mut diffs: Vec<f64> = Vec::new();
@@ -854,6 +858,12 @@ pub fn api_tooldiff(state: &mut AppState, req: &Json) -> BiResult<Json> {
     } else {
         Json::Null
     };
+    // 省いたときは理由を返す(結果から黙って消さない)
+    let pairs_note = if groups.len() >= 3 && !significant {
+        json!("全体の検定が有意ではないため、ペアごとの比較は行いません。有意でない全体検定のあとにペアを見比べると、偶然の差を有意と誤認しやすくなります。")
+    } else {
+        Json::Null
+    };
 
     // 群ごとの要約統計とストリップ図用の点(最大200点/群に間引き)
     let group_stats: Vec<Json> = groups
@@ -864,7 +874,9 @@ pub fn api_tooldiff(state: &mut AppState, req: &Json) -> BiResult<Json> {
                 mn = mn.min(x);
                 mx = mx.max(x);
             }
-            let step = (v.len() / 200).max(1);
+            // 切り上げで割る。切り捨てだと上限を超える
+            // (例: 599点 → 599/200=2 で 300点になり「最大200点」が嘘になる)
+            let step = v.len().div_ceil(200).max(1);
             json!({
                 "label": label,
                 "n": v.len(),
@@ -889,6 +901,7 @@ pub fn api_tooldiff(state: &mut AppState, req: &Json) -> BiResult<Json> {
         "truncated": result.truncated,
         "row_limit": ANALYZE_LIMIT,
         "overall_mean": round4(overall_mean),
+        "pairs_note": pairs_note,
         "test": {
             "name": test.test,
             "statistic_name": test.statistic_name,
@@ -2219,6 +2232,79 @@ mod tests {
             (from_points - got).abs() > 0.3,
             "間引き後の平均({from_points})と全体平均({got})が近すぎてテストの意味がない"
         );
+    }
+
+    /// ストリップ図の点は宣言どおり200点/群を超えない。
+    /// 切り捨てで割ると 599点 → step=2 → 300点 になってしまう
+    #[test]
+    fn test_tooldiff_point_sampling_cap() {
+        for n in [199usize, 200, 201, 399, 599, 1000, 40_001] {
+            let mut rows: Vec<Vec<Value>> = Vec::new();
+            for g in ["A", "B"] {
+                for i in 0..n {
+                    let v = (i % 7) as f64;
+                    rows.push(vec![Value::Text(g.into()), Value::Float(v)]);
+                }
+            }
+            let name = format!("cap{n}");
+            let mut st = state_with(
+                &name,
+                &[("g", DataType::Utf8), ("v", DataType::Float64)],
+                rows,
+            );
+            let r = api_tooldiff(
+                &mut st,
+                &json!({"source": ds(&name), "group": "g", "value": "v"}),
+            )
+            .unwrap();
+            for g in r["groups"].as_array().unwrap() {
+                let pts = g["points"].as_array().unwrap().len();
+                assert!(pts <= 200, "n={n} で {pts}点(上限200を超えた)");
+                // 200点以下なら間引かない
+                if n <= 200 {
+                    assert_eq!(pts, n, "n={n} は間引く必要がない");
+                }
+            }
+        }
+    }
+
+    /// 装置差分析でも、全体の検定が有意なときだけペア比較を返す。
+    /// 「有意差なし」と表示しながら有意ペアを並べる食い違いを防ぐ
+    #[test]
+    fn test_tooldiff_pairs_gated_on_omnibus() {
+        let build = |bases: [f64; 3], tag: &str| {
+            let mut rows: Vec<Vec<Value>> = Vec::new();
+            for (gi, base) in bases.iter().enumerate() {
+                for i in 0..12 {
+                    let v = base + (i % 4) as f64 * 0.5 - 0.75;
+                    rows.push(vec![Value::Text(format!("G{gi}")), Value::Float(v)]);
+                }
+            }
+            let name = format!("tdg{tag}");
+            let mut st = state_with(
+                &name,
+                &[("g", DataType::Utf8), ("v", DataType::Float64)],
+                rows,
+            );
+            api_tooldiff(
+                &mut st,
+                &json!({"source": ds(&name), "group": "g", "value": "v"}),
+            )
+            .unwrap()
+        };
+
+        let sig = build([10.0, 20.0, 30.0], "sig");
+        assert_eq!(sig["test"]["significant"], true);
+        assert_eq!(sig["pairs"].as_array().unwrap().len(), 3);
+        assert!(sig["pairs_note"].is_null());
+
+        let nosig = build([10.0, 10.0, 10.0], "nosig");
+        assert_eq!(nosig["test"]["significant"], false);
+        assert!(nosig["pairs"].is_null(), "{}", nosig["pairs"]);
+        assert!(nosig["pairs_note"]
+            .as_str()
+            .unwrap()
+            .contains("有意ではない"));
     }
 
     // ---------- 検定API(事後比較のゲート) ----------
