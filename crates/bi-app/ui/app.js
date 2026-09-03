@@ -161,6 +161,10 @@ async function refreshState() {
   // データセット一覧が変わった可能性があるため、チャートの列セレクトも追随させる。
   // これを怠ると「インポート直後にソースを切り替えるまでX列/Y列が選べない」状態になる
   await loadChartColumns();
+  // ダッシュボードを表示中なら引き直してキャッシュを埋め直す。
+  // 捨てたまま放置すると、画面は古い絵のままなのにキャッシュだけ空になり、
+  // PNG/HTMLの書き出しがテーブルの行を見失って「(データ未取得)」になる
+  if ($("tab-dashboard").classList.contains("active")) await renderDashboard();
 }
 
 /** 表示用: 接続URLのパスワード部分を伏せる */
