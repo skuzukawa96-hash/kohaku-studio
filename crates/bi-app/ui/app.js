@@ -1674,8 +1674,12 @@ function drawChartArea(ctx, w, h, spec, result, title, shared) {
     const catIndex = new Map();
     const catLabels = [];
     if (!xNumeric) {
+      // 表示上限を超えて描かれない系列の行は数えない。含めると、その系列に
+      // しか無いカテゴリが空の目盛りとして残り、見えている系列の並びもずれる
+      const shown = si >= 0 ? new Set(seriesNames) : null;
       for (const r of result.rows) {
         if (r[xi] === null || r[yi] === null) continue;
+        if (shown && !shown.has(r[si] === null ? "(null)" : String(r[si]))) continue;
         const cx = String(r[xi]);
         if (!catIndex.has(cx)) {
           catIndex.set(cx, catIndex.size);
