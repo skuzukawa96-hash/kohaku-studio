@@ -35,3 +35,17 @@ INSERT INTO customers VALUES
     (1, '田中', '東京都', '2025-01-15'),
     (2, '鈴木', '大阪府', '2025-03-02'),
     (3, '佐藤', '福岡県', NULL);
+
+-- public 以外のスキーマ + 秒未満を持つ時刻(コネクタの検証用)。
+-- 一覧に schema.table の形で出て、読み込めること・小数秒が残ることを確かめる
+CREATE SCHEMA fab;
+
+CREATE TABLE fab.events (
+    id     integer     PRIMARY KEY,
+    ts     timestamp   NOT NULL,
+    tstz   timestamptz NOT NULL
+);
+
+INSERT INTO fab.events VALUES
+    (1, '2026-03-01 08:15:30.123456', '2026-03-01 08:15:30.123456+09'),
+    (2, '2026-03-01 08:15:31',        '2026-03-01 08:15:31+09');

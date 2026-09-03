@@ -64,6 +64,12 @@ async fn pg_pool(url: &str) -> BiResult<sqlx::PgPool> {
         .map_err(|e| format!("PostgreSQLに接続できません: {e}"))
 }
 
+/// 日時の文字列化フォーマット。`%.f` は小数部が0のときは何も出さないので、
+/// 秒未満を持たない既存データの表記は変わらず、持つデータだけ精度が残る
+/// (秒で切り捨てると、イベント時刻での並べ替えやJOINが静かに壊れる)。
+const TS_FMT: &str = "%Y-%m-%d %H:%M:%S%.f";
+const TSTZ_FMT: &str = "%Y-%m-%d %H:%M:%S%.f%:z";
+
 /// PostgreSQLの1セルを Value へ変換(型名ベース、失敗時は文字列へフォールバック)
 fn pg_value(row: &sqlx::postgres::PgRow, i: usize) -> Value {
     let tname = row.column(i).type_info().name().to_uppercase();
@@ -91,17 +97,31 @@ fn pg_value(row: &sqlx::postgres::PgRow, i: usize) -> Value {
             v.to_string()
         )),
         "TIMESTAMP" => take!(chrono::NaiveDateTime, |v: chrono::NaiveDateTime| {
-            Value::Text(v.format("%Y-%m-%d %H:%M:%S").to_string())
+            Value::Text(v.format(TS_FMT).to_string())
         }),
         "TIMESTAMPTZ" => take!(chrono::DateTime<chrono::Utc>, |v: chrono::DateTime<
             chrono::Utc,
         >| {
-            Value::Text(v.format("%Y-%m-%d %H:%M:%S%:z").to_string())
+            Value::Text(v.format(TSTZ_FMT).to_string())
         }),
         _ => {}
     }
     take!(String, Value::Text);
     Value::Text(format!("[{tname}]"))
+}
+
+/// PostgreSQLのオブジェクト名から、SQLに埋め込む参照の候補を優先順に作る。
+/// list_objects は public 以外を `schema.table` の形で返すので、最初の '.' で
+/// 分けて各要素をクオートする。ただしテーブル名自体に '.' を含む場合もあるため、
+/// 名前全体を1つの識別子として扱う候補も後ろに残す(従来の挙動を壊さない)。
+fn pg_table_refs(object: &str) -> Vec<String> {
+    let quote = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+    match object.split_once('.') {
+        Some((schema, table)) if !schema.is_empty() && !table.is_empty() => {
+            vec![format!("{}.{}", quote(schema), quote(table)), quote(object)]
+        }
+        _ => vec![quote(object)],
+    }
 }
 
 impl Connector for PostgresConnector {
@@ -121,38 +141,72 @@ impl Connector for PostgresConnector {
         let url = url_of(path);
         runtime()?.block_on(async {
             let pool = pg_pool(&url).await?;
+            // public 以外のスキーマに置かれたテーブルも一覧に出す。
+            // information_schema.tables はアクセス権のあるものだけを返すので、
+            // システムスキーマ2つを除けば「その利用者に見えるもの」になる。
+            // public はこれまでどおり素の名前で返し(保存済みプロジェクトとの
+            // 互換のため)、それ以外は schema.table の形にする
             let rows = sqlx::query(
-                "SELECT table_name FROM information_schema.tables \
-                 WHERE table_schema = 'public' AND table_type IN ('BASE TABLE', 'VIEW') \
-                 ORDER BY table_name",
+                "SELECT table_schema, table_name FROM information_schema.tables \
+                 WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
+                 AND table_type IN ('BASE TABLE', 'VIEW') \
+                 ORDER BY table_schema <> 'public', table_schema, table_name",
             )
             .fetch_all(&pool)
             .await
             .map_err(|e| format!("テーブル一覧の取得に失敗: {e}"))?;
-            Ok(rows.iter().map(|r| r.get::<String, _>(0)).collect())
+            Ok(rows
+                .iter()
+                .map(|r| {
+                    let schema = r.get::<String, _>(0);
+                    let table = r.get::<String, _>(1);
+                    if schema == "public" {
+                        table
+                    } else {
+                        format!("{schema}.{table}")
+                    }
+                })
+                .collect())
         })
     }
 
     fn load(&self, path: &Path, object: &str, opts: &ImportOptions) -> BiResult<TableData> {
         let url = url_of(path);
-        let ident = object.replace('"', "\"\"");
-        let sql = match opts.max_rows {
-            Some(n) => format!("SELECT * FROM \"{ident}\" LIMIT {n}"),
-            None => format!("SELECT * FROM \"{ident}\""),
+        let limit = match opts.max_rows {
+            Some(n) => format!(" LIMIT {n}"),
+            None => String::new(),
         };
+        // 候補のSQLは async ブロックの外に置く(prepare が返す文は
+        // 文字列を借りるため、ブロック内のローカルだと生存期間が足りない)
+        let sqls: Vec<String> = pg_table_refs(object)
+            .iter()
+            .map(|r| format!("SELECT * FROM {r}{limit}"))
+            .collect();
         runtime()?.block_on(async {
             let pool = pg_pool(&url).await?;
-            // prepareで列名を先に確定させる(0行のテーブルでもスキーマを得るため)
-            let stmt = pool
-                .prepare(sql.as_str())
-                .await
-                .map_err(|e| format!("テーブル「{object}」を読み込めません: {e}"))?;
-            let names: Vec<String> = stmt
-                .columns()
-                .iter()
-                .map(|c| c.name().to_string())
-                .collect();
-            let db_rows = sqlx::query(&sql)
+            // prepareで列名を先に確定させる(0行のテーブルでもスキーマを得るため)。
+            // 参照の候補を順に試し、最初に通ったものを使う
+            let mut last_err = String::new();
+            let mut names: Vec<String> = Vec::new();
+            let mut chosen: Option<&str> = None;
+            for sql in &sqls {
+                match pool.prepare(sql.as_str()).await {
+                    Ok(stmt) => {
+                        names = stmt
+                            .columns()
+                            .iter()
+                            .map(|c| c.name().to_string())
+                            .collect();
+                        chosen = Some(sql.as_str());
+                        break;
+                    }
+                    Err(e) => last_err = e.to_string(),
+                }
+            }
+            let Some(sql) = chosen else {
+                return Err(format!("テーブル「{object}」を読み込めません: {last_err}"));
+            };
+            let db_rows = sqlx::query(sql)
                 .fetch_all(&pool)
                 .await
                 .map_err(|e| format!("テーブル「{object}」の読み込みに失敗: {e}"))?;
@@ -219,21 +273,31 @@ fn my_value(row: &sqlx::mysql::MySqlRow, i: usize) -> Value {
             v.to_string()
         )),
         "DATETIME" => take!(chrono::NaiveDateTime, |v: chrono::NaiveDateTime| {
-            Value::Text(v.format("%Y-%m-%d %H:%M:%S").to_string())
+            Value::Text(v.format(TS_FMT).to_string())
         }),
         "TIMESTAMP" => take!(chrono::DateTime<chrono::Utc>, |v: chrono::DateTime<
             chrono::Utc,
         >| {
-            Value::Text(v.format("%Y-%m-%d %H:%M:%S%:z").to_string())
+            Value::Text(v.format(TSTZ_FMT).to_string())
         }),
         _ => {}
     }
     take!(String, Value::Text);
     // バイナリ照合(utf8mb4_bin等)の文字列列は VARBINARY として返り
-    // String で直読できないため、バイト列経由でテキスト化する
-    take!(Vec<u8>, |v: Vec<u8>| Value::Text(
-        String::from_utf8_lossy(&v).into_owned()
-    ));
+    // String で直読できないため、バイト列経由でテキスト化する。
+    // ただし UTF-8 として妥当なときだけにする: 本物の BLOB/VARBINARY を
+    // from_utf8_lossy に通すと、置換文字(U+FFFD)まみれの「文字列」に
+    // 化けたデータが黙って取り込まれてしまう
+    match row.try_get::<Option<Vec<u8>>, _>(i) {
+        Ok(Some(v)) => {
+            if let Ok(s) = String::from_utf8(v) {
+                return Value::Text(s);
+            }
+            // UTF-8でないバイト列は下のプレースホルダに落とす
+        }
+        Ok(None) => return Value::Null,
+        Err(_) => {}
+    }
     Value::Text(format!("[{tname}]"))
 }
 
@@ -311,6 +375,26 @@ mod tests {
 
     /// 実DBが必要なテスト。環境変数が無ければスキップする。
     /// 例: KOHAKU_TEST_PG_URL=postgres://kohaku:kohaku@localhost:5432/demo
+    /// 参照候補の作られ方。public 以外は "schema"."table" と解釈しつつ、
+    /// 名前に '.' を含むテーブル向けに従来どおりの候補も残す
+    #[test]
+    fn test_pg_table_refs() {
+        assert_eq!(pg_table_refs("sales"), vec![r#""sales""#]);
+        assert_eq!(
+            pg_table_refs("fab.events"),
+            vec![r#""fab"."events""#, r#""fab.events""#]
+        );
+        // 二重引用符はエスケープする(SQLインジェクションを防ぐ)
+        assert_eq!(pg_table_refs(r#"a"b"#), vec![r#""a""b""#]);
+        assert_eq!(
+            pg_table_refs(r#"s"1.t"2"#),
+            vec![r#""s""1"."t""2""#, r#""s""1.t""2""#]
+        );
+        // 前後が空なら分割しない
+        assert_eq!(pg_table_refs(".x"), vec![r#"".x""#]);
+        assert_eq!(pg_table_refs("x."), vec![r#""x.""#]);
+    }
+
     #[test]
     fn test_postgres_live() {
         let Ok(url) = std::env::var("KOHAKU_TEST_PG_URL") else {
@@ -332,6 +416,28 @@ mod tests {
             .position(|c| c.name == "quantity")
             .unwrap();
         assert_eq!(td.schema.columns[qi].data_type, DataType::Int64);
+
+        // public 以外のスキーマも一覧に出て、schema.table で読み込める
+        assert!(objs.contains(&"fab.events".to_string()), "{objs:?}");
+        let ev = PostgresConnector
+            .load(&p, "fab.events", &ImportOptions::default())
+            .unwrap();
+        assert_eq!(ev.rows.len(), 2);
+        // 秒未満が切り捨てられない。持たない行には余計な .000 も付かない
+        assert_eq!(
+            ev.rows[0][1],
+            Value::Text("2026-03-01 08:15:30.123456".into())
+        );
+        assert_eq!(ev.rows[1][1], Value::Text("2026-03-01 08:15:31".into()));
+        assert!(
+            matches!(&ev.rows[0][2], Value::Text(t) if t.contains(".123456")),
+            "{:?}",
+            ev.rows[0][2]
+        );
+        // 存在しないテーブルは候補を試し切ってからエラーになる
+        assert!(PostgresConnector
+            .load(&p, "fab.nope", &ImportOptions::default())
+            .is_err());
     }
 
     #[test]
@@ -347,5 +453,21 @@ mod tests {
             .load(&p, "sales", &ImportOptions::default())
             .unwrap();
         assert_eq!(td.rows.len(), 8);
+
+        let bt = MySqlConnector
+            .load(&p, "binary_types", &ImportOptions::default())
+            .unwrap();
+        assert_eq!(bt.rows.len(), 2);
+        // 本物のBLOBは置換文字だらけの文字列にせず、プレースホルダのままにする
+        assert_eq!(bt.rows[0][1], Value::Text("[BLOB]".into()));
+        assert_eq!(bt.rows[1][1], Value::Text("[BLOB]".into()));
+        // バイナリ照合の文字列列はこれまでどおり読める
+        assert_eq!(bt.rows[0][2], Value::Text("照合がバイナリの文字列".into()));
+        // 秒未満が切り捨てられない
+        assert_eq!(
+            bt.rows[0][3],
+            Value::Text("2026-03-01 08:15:30.123456".into())
+        );
+        assert_eq!(bt.rows[1][3], Value::Text("2026-03-01 08:15:31".into()));
     }
 }
