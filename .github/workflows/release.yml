@@ -29,10 +29,16 @@ jobs:
         include:
           - os: windows-latest
             label: Windows (x86_64)
+            target: x86_64-pc-windows-msvc
             bin: kohaku-studio.exe
             asset: kohaku-studio-windows-x86_64.exe
+          # Linux は musl で完全静的リンクにする。既定の GNU ターゲットだと
+          # ビルドしたランナーの glibc に動的リンクされ、より古いディストリでは
+          # "GLIBC_x.y not found" で起動できない(READMEの「ダウンロードするだけで
+          # 動く」が成立しなくなる)。musl 静的リンクなら glibc に依存しない。
           - os: ubuntu-latest
-            label: Linux (x86_64)
+            label: Linux (x86_64, static)
+            target: x86_64-unknown-linux-musl
             bin: kohaku-studio
             asset: kohaku-studio-linux-x86_64
     steps:
@@ -42,23 +48,53 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # musl 向けCコンパイラ。rusqlite(bundled)がSQLiteのCソースを、
+      # ring が一部アセンブリ/Cをビルドするために必要
+      - name: Install musl toolchain
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
       - name: Build (release)
-        run: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Smoke test
         # 起動できることだけ確認する(GUIを開かない --make-samples を使う)
         shell: bash
         run: |
-          ./target/release/${{ matrix.bin }} --make-samples ./ci-samples
+          BIN="target/${{ matrix.target }}/release/${{ matrix.bin }}"
+          "$BIN" --make-samples ./ci-samples
           test -f ./ci-samples/sample_sales.csv
+
+      # 配布物が本当に glibc へ依存していないことを確認する。
+      # 動的リンクが混ざっていたら、この時点で失敗させて気づけるようにする
+      - name: Verify static linking (Linux)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          BIN="target/${{ matrix.target }}/release/${{ matrix.bin }}"
+          INFO=$(file "$BIN")
+          echo "$INFO"
+          # musl の完全静的リンクは "statically linked" または
+          # "static-pie linked" と報告される。動的リンクが混ざっていたら
+          # 古い環境で GLIBC エラーになるため、ここで失敗させる
+          case "$INFO" in
+            *"statically linked"*|*"static-pie linked"*)
+              echo "静的リンクを確認" ;;
+            *)
+              echo "::error::静的リンクになっていない: $INFO"
+              exit 1 ;;
+          esac
 
       - name: Rename artifact
         shell: bash
-        run: cp "target/release/${{ matrix.bin }}" "${{ matrix.asset }}"
+        run: cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "${{ matrix.asset }}"
 
       - name: Upload to release
         shell: bash
