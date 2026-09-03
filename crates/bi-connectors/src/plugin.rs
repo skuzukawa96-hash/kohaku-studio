@@ -138,11 +138,15 @@ pub struct PluginConnector {
 /// 変えるだけなので、同梱の実行ファイルは "./" を書かないと起動できなかった。
 fn resolve_program(dir: &Path, entry0: &str) -> PathBuf {
     let bundled = dir.join(entry0);
-    if bundled.is_file() {
-        bundled
-    } else {
-        PathBuf::from(entry0)
+    if !bundled.is_file() {
+        return PathBuf::from(entry0);
     }
+    // 絶対パスにしてから渡す。spawn() は current_dir をプラグインの
+    // ディレクトリにするため、相対パスのままだと子プロセスの作業ディレクトリ
+    // 基準で二重に解決されてしまう
+    // (plugins/foo + plugins/foo/connector → plugins/foo/plugins/foo/connector)。
+    // 従来から動いていた "./connector" のような書き方も同じ理由で壊れる
+    std::fs::canonicalize(&bundled).unwrap_or(bundled)
 }
 
 /// 子プロセスの終了を待つが、上限を超えたら強制終了する。
@@ -627,7 +631,7 @@ mod tests {
         assert!(warns.is_empty()); // 未導入は警告ではない
     }
 
-    /// 同梱の実行ファイルはプラグインのディレクトリから解決し、
+    /// 同梱の実行ファイルはプラグインのディレクトリから絶対パスで解決し、
     /// PATH上のコマンド名はそのまま渡す
     #[test]
     fn test_resolve_program() {
@@ -637,9 +641,26 @@ mod tests {
         let bundled = dir.join("connector.exe");
         std::fs::write(&bundled, b"dummy").unwrap();
 
-        assert_eq!(resolve_program(&dir, "connector.exe"), bundled);
+        // 同梱の実行ファイルは絶対パスで返す(相対のままだと current_dir と
+        // 二重に解決される)
+        let resolved = resolve_program(&dir, "connector.exe");
+        assert!(resolved.is_absolute(), "{resolved:?}");
+        assert_eq!(
+            std::fs::canonicalize(&resolved).unwrap(),
+            std::fs::canonicalize(&bundled).unwrap()
+        );
+        // "./" 付きでも同じ実行ファイルに解決する(従来の書き方を壊さない)
+        assert_eq!(resolve_program(&dir, "./connector.exe"), resolved);
         // ディレクトリに無い名前はPATHへ任せる(そのまま返す)
         assert_eq!(resolve_program(&dir, "python"), PathBuf::from("python"));
+        // プラグインディレクトリ自体が相対パスでも絶対パスに直す
+        // (KOHAKU_PLUGIN_DIR に "plugins" のような相対値を入れたケース)
+        let rel = PathBuf::from("target").join("kohaku_plugin_rel_test");
+        std::fs::create_dir_all(&rel).unwrap();
+        std::fs::write(rel.join("connector.exe"), b"dummy").unwrap();
+        let rel_resolved = resolve_program(&rel, "connector.exe");
+        assert!(rel_resolved.is_absolute(), "{rel_resolved:?}");
+        let _ = std::fs::remove_dir_all(&rel);
         // ディレクトリ自体はプログラムとして扱わない
         std::fs::create_dir_all(dir.join("subdir")).unwrap();
         assert_eq!(resolve_program(&dir, "subdir"), PathBuf::from("subdir"));
