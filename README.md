@@ -28,7 +28,7 @@ Webサーバーを起動し、既定のブラウザでUIを開きます。Node /
 | OS | ファイル |
 | --- | --- |
 | Windows | `kohaku-studio-windows-x86_64.exe` |
-| Linux | `kohaku-studio-linux-x86_64`（`chmod +x` で実行権限を付けてください） |
+| Linux | `kohaku-studio-linux-x86_64`（`chmod +x` で実行権限を付けてください。静的リンクなのでディストリビューションを問わず動きます） |
 
 ダブルクリック（またはコマンドラインで実行）すると、既定のブラウザでUIが開きます。
 
