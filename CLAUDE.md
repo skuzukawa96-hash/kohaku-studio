@@ -96,12 +96,15 @@ bi-app        HTTPサーバー(tiny_http) / SQLite in-memoryクエリエンジ�
 **既定はオーナーが実行する**が、依頼があれば Claude が代行してよい（その場合も実行したコマンドを提示する）。
 
 ```bash
+VER=v0.6.0            # ← 出すバージョンに置き換える
+SUMMARY="per-column visualization (histogram hue, facet grids, multi-wafer maps)"
+
 gh pr merge <N> --squash --delete-branch
 git checkout main; git pull origin main
 # タグは必ず注釈付き(-a)で作る。v0.2.0 以降すべて注釈付きで統一している
-git tag -a v0.6.0 -m "v0.6.0: per-column visualization (histogram hue, facet grids, multi-wafer maps)"
-git push origin v0.6.0
-gh release create v0.6.0 --title "Kohaku Studio v0.6.0" --generate-notes
+git tag -a "$VER" -m "$VER: $SUMMARY"
+git push origin "$VER"
+gh release create "$VER" --title "Kohaku Studio $VER" --generate-notes
 ```
 
 - `--generate-notes` はPR一覧とFull Changelogを自動生成する。日本語の概要を冒頭に足す場合は `--notes-file` を併用する。
