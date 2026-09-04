@@ -53,6 +53,10 @@ function applyTheme(name) {
       REDRAW.delete(canvas);
       continue;
     }
+    // 非表示のCanvasは描き直さない。再描画関数は classList.remove("hidden") を
+    // 含むため、テーマを切り替えただけで「分析に失敗して隠したはずの前のグラフ」が
+    // エラー表示の隣に復活してしまう。再表示は必ず描画を伴うので飛ばしてよい
+    if (canvas.classList.contains("hidden")) continue;
     try {
       fn();
     } catch (e) {
@@ -149,9 +153,18 @@ async function refreshState() {
   renderAnDatasetSelect();
   renderLotColSelect();
   renderHistory(st.queries || []);
+  // 同名で再インポートするとサーバー側の中身だけ入れ替わる。キャッシュを
+  // 残すとダッシュボードが古い行を描き続け、SQLチャートの列一覧も古いままで
+  // 新しく増えた列がフィルタで「対象外」になる
+  dashCache.clear();
+  dashSourceCols.clear();
   // データセット一覧が変わった可能性があるため、チャートの列セレクトも追随させる。
   // これを怠ると「インポート直後にソースを切り替えるまでX列/Y列が選べない」状態になる
   await loadChartColumns();
+  // ダッシュボードを表示中なら引き直してキャッシュを埋め直す。
+  // 捨てたまま放置すると、画面は古い絵のままなのにキャッシュだけ空になり、
+  // PNG/HTMLの書き出しがテーブルの行を見失って「(データ未取得)」になる
+  if ($("tab-dashboard").classList.contains("active")) await renderDashboard();
 }
 
 /** 表示用: 接続URLのパスワード部分を伏せる */
@@ -229,6 +242,17 @@ function impMode(mode) {
   $("imp-msg").textContent = "";
 }
 
+/** DBインポートの選択状態を捨てて設定欄を隠す */
+function resetDbImportState() {
+  imp.path = "";
+  imp.connector = "";
+  imp.objects = [];
+  $("imp-config").classList.add("hidden");
+  $("imp-object").innerHTML = "";
+  $("imp-preview").innerHTML = "";
+  $("imp-msg").textContent = "";
+}
+
 /** DB接続URLからテーブル一覧を取得してインポート設定を表示する */
 async function connectDb() {
   const url = $("imp-db-url").value.trim();
@@ -236,6 +260,10 @@ async function connectDb() {
     $("imp-db-msg").textContent = "接続URLを入力してください";
     return;
   }
+  // 前の接続の状態を先に捨てる。残したままだと、別のDBへの接続に失敗しても
+  // 前のDBのテーブル一覧が表示されたままになり、URL欄と違うDBから
+  // 取り込んでしまう
+  resetDbImportState();
   $("imp-db-msg").textContent = "接続中...";
   try {
     const r = await api("/api/objects", { path: url });
@@ -541,6 +569,38 @@ function syncFacet2Enabled() {
   $("ch-facet2").disabled = !$("ch-facet").value;
 }
 
+/** 集計セレクトの全選択肢(値, 表示名) */
+const AGG_OPTIONS = [
+  ["none", "なし"],
+  ["sum", "合計"],
+  ["avg", "平均"],
+  ["count", "件数"],
+  ["min", "最小"],
+  ["max", "最大"],
+];
+
+/** 集計セレクトの選択肢を絞る(allowed が null なら全部)。
+ *  チャートが対応していない集計を選べると、選んだ内容と表示が食い違う
+ *  (SPCは avg/sum しか実装していないのに件数・最小・最大も選べていた)。 */
+function setAggOptions(allowed) {
+  const sel = $("ch-agg");
+  const cur = sel.value;
+  // allowed の並び順をそのまま使う。先頭が既定になるので、チャート側は
+  // 既定にしたい集計を先に書く(SPCなら平均)
+  const list = allowed
+    ? allowed.map((v) => AGG_OPTIONS.find(([k]) => k === v)).filter(Boolean)
+    : AGG_OPTIONS;
+  if (!list.length) return;
+  sel.innerHTML = "";
+  for (const [v, label] of list) {
+    const op = document.createElement("option");
+    op.value = v;
+    op.textContent = label;
+    sel.appendChild(op);
+  }
+  sel.value = list.some(([v]) => v === cur) ? cur : list[0][0];
+}
+
 function updateChartFormVisibility() {
   const kind = $("ch-source-kind").value;
   const type = $("ch-type").value;
@@ -557,6 +617,8 @@ function updateChartFormVisibility() {
     $("ch-value-row").classList.toggle("hidden", !f.value);
     $("ch-series-row").classList.toggle("hidden", !f.series);
     $("ch-agg-row").classList.toggle("hidden", !f.agg);
+    // form.agg に配列を渡すと、その集計だけを選べるようにする
+    setAggOptions(Array.isArray(f.agg) ? f.agg : null);
     $("ch-x-label").textContent = typeof f.x === "string" ? f.x : "X列";
     $("ch-y-label").textContent = typeof f.y === "string" ? f.y : "Y列";
     $("ch-value-label").textContent = typeof f.value === "string" ? f.value : "値の列";
@@ -576,6 +638,7 @@ function updateChartFormVisibility() {
   $("ch-facet-row").classList.toggle("hidden", type === "table");
   $("ch-facet2-row").classList.toggle("hidden", type === "table");
   $("ch-agg-row").classList.toggle("hidden", type === "histogram" || type === "table" || type === "scatter");
+  setAggOptions(null); // 組み込みチャートは全集計に対応する
   $("ch-yrange-row").classList.toggle("hidden", type === "table");
   // X軸の手動レンジは、X軸が数値になるグラフ(散布図・折れ線・ヒストグラム)でのみ意味を持つ
   $("ch-xrange-row").classList.toggle(
@@ -617,7 +680,7 @@ async function loadChartColumns() {
     } else {
       const sql = stripSemi($("ch-sql").value);
       if (sql) {
-        const r = await api("/api/query", { sql: `SELECT * FROM (${sql}) LIMIT 1`, limit: 1 });
+        const r = await api("/api/query", { sql: `SELECT * FROM (${sql}) LIMIT 1`, limit: 1, record: false });
         cols = r.columns;
       }
     }
@@ -693,8 +756,11 @@ function buildChartQuery(spec, filters) {
       ]
         .filter(Boolean)
         .join(", ");
-      // ファセット時はグループ数が増えるため上限を広げる
-      const lim = spec.facet ? 12000 : 4000;
+      // ファセット時はグループ数が増えるため上限を広げる。2次元ファセットは
+      // セルが (列 × 行) に増えるので、行の次元数ぶんさらに広げる。
+      // 足りないとSQLite側で切り捨てられ、後ろのカテゴリや系列が
+      // 「成功したように見えるのに欠けている」状態になる
+      const lim = spec.facet ? (spec.facet2 ? 12000 * FACET2_DIM_MAX : 12000) : 4000;
       return `SELECT ${x} AS x, ${agg} AS y${s}${f}${f2} FROM (${base}) GROUP BY ${grp} ORDER BY ${x} LIMIT ${lim}`;
     }
   }
@@ -708,6 +774,11 @@ async function chartData(spec, filters) {
   return api("/api/query", { sql: buildChartQuery(spec, filters), limit: 100000 });
 }
 
+/** 最後にプレビューが成功したときの spec。PNG保存はこれを使う。
+ *  フォームを編集しただけではCanvasの中身は変わらないので、保存時に
+ *  フォームから作り直すと画像と題名・ファイル名が食い違う。 */
+let lastPreviewSpec = null;
+
 async function previewChart() {
   const spec = chartSpecFromForm();
   $("chart-title").textContent = spec.name;
@@ -715,6 +786,7 @@ async function previewChart() {
   try {
     const r = await chartData(spec);
     drawChartInto($("chart-canvas"), $("chart-table"), spec, r, true);
+    lastPreviewSpec = spec;
   } catch (err) {
     $("chart-msg").textContent = err.message;
   }
@@ -1052,8 +1124,14 @@ function computeFacetShared(spec, result, reg, cellArrays) {
   } else if (spec.chart_type === "histogram") {
     const vals = result.rows.map((r) => Number(r[xi])).filter((v) => isFinite(v));
     if (vals.length) {
-      const lo = Math.min(...vals);
-      const hi = Math.max(...vals);
+      let lo = Math.min(...vals);
+      let hi = Math.max(...vals);
+      // X軸の手動レンジは描画側と同じようにここでも効かせる。効かせないと、
+      // 範囲外の行まで含めた最大度数で全パネルの度数軸が決まり、
+      // 範囲内の棒が潰れて見える
+      const mlo = numOrNull(spec.x_min), mhi = numOrNull(spec.x_max);
+      const nlo = mlo !== null ? mlo : lo, nhi = mhi !== null ? mhi : hi;
+      if (nhi > nlo) { lo = nlo; hi = nhi; }
       shared.histRange = [lo, hi]; // ビンの区切りも全セルで共有
       if (numOrNull(spec.y_min) === null && numOrNull(spec.y_max) === null) {
         // 共有ビンで各セルの最大度数を求め、度数軸も揃える
@@ -1064,7 +1142,7 @@ function computeFacetShared(spec, result, reg, cellArrays) {
           const counts = new Array(nb).fill(0);
           for (const r of rows) {
             const v = Number(r[xi]);
-            if (!isFinite(v)) continue;
+            if (!isFinite(v) || v < lo || v > hi) continue; // 描画側と同じ絞り込み
             let b = Math.floor(((v - lo) / width) * nb);
             if (b >= nb) b = nb - 1;
             peak = Math.max(peak, ++counts[b]);
@@ -1075,7 +1153,11 @@ function computeFacetShared(spec, result, reg, cellArrays) {
         specShared.y_max = String(t[t.length - 1]);
       }
     }
-  } else if (numOrNull(spec.y_min) === null && numOrNull(spec.y_max) === null) {
+  } else if (numOrNull(spec.y_min) === null || numOrNull(spec.y_max) === null) {
+    // 手動レンジは片側だけの指定もある。両方指定されていないかぎり、
+    // 全セルの自動レンジを求めてから、指定されていない側だけを埋める。
+    // (片側指定でここを丸ごと飛ばすと、指定していない側がセルごとの
+    //  自動レンジになり、パネル同士を見比べられなくなる)
     const yi = result.columns.indexOf("y");
     let gmin = Infinity;
     let gmax = -Infinity;
@@ -1093,9 +1175,12 @@ function computeFacetShared(spec, result, reg, cellArrays) {
         gmin = Math.min(0, gmin); // 棒グラフは0基点を維持する
         gmax = Math.max(0, gmax);
       }
-      const t = niceTicks(gmin, gmax, 5);
-      specShared.y_min = String(t[0]);
-      specShared.y_max = String(t[t.length - 1]);
+      // 手動指定がある側はその値を基準に刻みを作る
+      const lo = numOrNull(spec.y_min) ?? gmin;
+      const hi = numOrNull(spec.y_max) ?? gmax;
+      const t = niceTicks(lo, hi, 5);
+      if (numOrNull(spec.y_min) === null) specShared.y_min = String(t[0]);
+      if (numOrNull(spec.y_max) === null) specShared.y_max = String(t[t.length - 1]);
     }
   }
   return { shared, specShared, notes };
@@ -1596,9 +1681,11 @@ function drawChartArea(ctx, w, h, spec, result, title, shared) {
           if (!counts[b]) continue;
           const bx = m.l + (b / nb) * pw;
           const bw = pw / nb - 1;
-          // 棒は軸の下端から度数の高さまで(手動レンジで下端が0でなくても崩れない)
+          // 棒は「0から度数まで」。軸の下端まで塗ると、手動レンジの下端が
+          // 負のとき(y_min=-10 など)すべての棒がその分だけ水増しされる。
+          // 0がレンジ外なら clipPlot が切り取る(棒グラフ側と同じ考え方)
           const top = hpy(counts[b]);
-          ctx.fillRect(bx, top, Math.max(1, bw), m.t + ph - top);
+          ctx.fillRect(bx, top, Math.max(1, bw), hpy(0) - top);
         }
       });
       ctx.globalAlpha = 1;
@@ -1625,11 +1712,19 @@ function drawChartArea(ctx, w, h, spec, result, title, shared) {
     const allRows = seriesNames.flatMap((n) => bySeries.get(n)).filter((r) => r[yi] !== null);
     if (!allRows.length) return noData();
     const xNumeric = allRows.every((r) => typeof r[xi] === "number");
-    // カテゴリXは全系列共通の出現順インデックスに揃える
+    // カテゴリXは全系列共通の出現順インデックスに揃える。
+    // 並びは必ずクエリが返した行の順から作る。系列で分けたあとの順で作ると、
+    // 最初の系列に無いカテゴリが後ろへ回り、時系列順が崩れる
+    // (例: Jan/B, Feb/A, Mar/A, Mar/B → Jan, Mar, Feb になっていた)
     const catIndex = new Map();
     const catLabels = [];
     if (!xNumeric) {
-      for (const r of allRows) {
+      // 表示上限を超えて描かれない系列の行は数えない。含めると、その系列に
+      // しか無いカテゴリが空の目盛りとして残り、見えている系列の並びもずれる
+      const shown = si >= 0 ? new Set(seriesNames) : null;
+      for (const r of result.rows) {
+        if (r[xi] === null || r[yi] === null) continue;
+        if (shown && !shown.has(r[si] === null ? "(null)" : String(r[si]))) continue;
         const cx = String(r[xi]);
         if (!catIndex.has(cx)) {
           catIndex.set(cx, catIndex.size);
@@ -1728,17 +1823,36 @@ function drawChartArea(ctx, w, h, spec, result, title, shared) {
     cats = cats.slice(0, MAX_BARS);
   }
   const catPos = new Map(cats.map((c, i) => [c, i]));
-  // 系列ごとの カテゴリ→値 表(同一キー重複は後勝ち)
+  /** 1カテゴリ×1系列に並べる本数の上限(細くなりすぎるのを防ぐ) */
+  const MAX_PER_CAT = 20;
+  // 系列ごとの カテゴリ→値の配列。
+  // 集計ありならSQLがGROUP BY済みで1カテゴリ1値だが、集計なし(agg=none)は
+  // 同じカテゴリの行が複数返る。1値だけ持つと最後の行以外が黙って消えるので、
+  // 配列で持って「1行=1本」で描く
+  let dupTrimmed = false;
+  let hasDup = false;
   const vals = seriesNames.map((n) => {
     const mp = new Map();
     for (const r of bySeries.get(n)) {
       if (r[yi] === null) continue;
       const v = Number(r[yi]);
-      if (isFinite(v) && catPos.has(String(r[xi]))) mp.set(String(r[xi]), v);
+      const key = String(r[xi]);
+      if (!isFinite(v) || !catPos.has(key)) continue;
+      const list = mp.get(key);
+      if (!list) {
+        mp.set(key, [v]);
+      } else {
+        hasDup = true;
+        if (list.length < MAX_PER_CAT) list.push(v);
+        else dupTrimmed = true;
+      }
     }
     return mp;
   });
-  const allVals = vals.flatMap((mp) => [...mp.values()]);
+  if (hasDup) {
+    notes.push(dupTrimmed ? `重複カテゴリは各${MAX_PER_CAT}本まで表示` : "重複カテゴリは並べて表示");
+  }
+  const allVals = vals.flatMap((mp) => [...mp.values()].flat());
   if (!allVals.length) return noData();
   const barRange = applyManualRange(
     spec,
@@ -1756,13 +1870,17 @@ function drawChartArea(ctx, w, h, spec, result, title, shared) {
     ctx.fillStyle = color(k);
     const mp = vals[k];
     cats.forEach((c, i) => {
-      if (!mp.has(c)) return;
-      const v = mp.get(c);
-      const x0 = m.l + i * groupW + groupW * 0.12 + k * barW;
-      const y0 = py(Math.max(0, v));
-      const hh = Math.abs(py(v) - py(0));
-      const bw = Math.max(1, barW - (seriesNames.length > 1 ? 1 : 0));
-      ctx.fillRect(x0, v >= 0 ? y0 : py(0), bw, Math.max(1, hh));
+      const list = mp.get(c);
+      if (!list) return;
+      // 同じカテゴリに複数行あるときは、その系列の幅をさらに等分して並べる
+      const subW = barW / list.length;
+      const gap = seriesNames.length > 1 || list.length > 1 ? 1 : 0;
+      list.forEach((v, j) => {
+        const x0 = m.l + i * groupW + groupW * 0.12 + k * barW + j * subW;
+        const y0 = py(Math.max(0, v));
+        const hh = Math.abs(py(v) - py(0));
+        ctx.fillRect(x0, v >= 0 ? y0 : py(0), Math.max(1, subW - gap), Math.max(1, hh));
+      });
     });
   }));
   // カテゴリラベル
@@ -1862,10 +1980,34 @@ function drawWaferScale(ctx, sx, sy, sh, vMin, vMax, H) {
 }
 
 /** ウェハーマップの値域(ファセット時は全ウェハー共通) */
-function waferRange(rows, vi) {
-  const vs = rows.map((r) => r[vi]).filter((v) => v !== null);
-  let vMin = Math.min(...vs);
-  let vMax = Math.max(...vs);
+/** 配列の最小・最大。Math.min(...arr) は要素が数万を超えると
+ *  引数の上限に当たって落ちるため、ウェハーマップのように点数が多いものは
+ *  こちらを使う(ダイは最大10万点まで返る)。 */
+function minMax(arr) {
+  let mn = Infinity, mx = -Infinity;
+  for (const v of arr) {
+    if (v < mn) mn = v;
+    if (v > mx) mx = v;
+  }
+  return [mn, mx];
+}
+
+/** ウェハーマップの行を [x, y, v] の有限な数値だけにして返す。
+ *  列の選択肢には非数値の列も並ぶので、X/Yに文字列が選ばれることがある。
+ *  null チェックだけだと Math.min が NaN になり、「データがありません」にも
+ *  落ちずに真っ白なまま何も出ない。 */
+function waferDies(rows, xi, yi, vi) {
+  const num = (z) => (typeof z === "number" ? z : z === null || z === "" ? NaN : Number(z));
+  const out = [];
+  for (const r of rows) {
+    const x = num(r[xi]), y = num(r[yi]), v = num(r[vi]);
+    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(v)) out.push([x, y, v]);
+  }
+  return out;
+}
+
+function waferRange(rows) {
+  let [vMin, vMax] = minMax(rows.map((r) => r[2]));
   if (vMin === vMax) {
     vMin -= 1;
     vMax += 1;
@@ -1897,8 +2039,7 @@ kohaku.registerChartType({
     const xi = result.columns.indexOf("x");
     const yi = result.columns.indexOf("y");
     const vi = result.columns.indexOf("v");
-    const valid = (rows) => rows.filter((r) => r[xi] !== null && r[yi] !== null && r[vi] !== null);
-    const dies = valid(result.rows);
+    const dies = waferDies(result.rows, xi, yi, vi);
     if (!dies.length) {
       ctx.fillStyle = H.colors.text;
       ctx.fillText("データがありません", 16, 24);
@@ -1906,12 +2047,10 @@ kohaku.registerChartType({
     }
     // ファセット時は座標範囲とカラースケールを全ウェハーで共有する
     // (揃えないと同じ値が別の色になり、ウェハー同士を比較できない)
-    const basis = shared && shared.allRows ? valid(shared.allRows) : dies;
-    const xs = basis.map((r) => r[xi]);
-    const ys = basis.map((r) => r[yi]);
-    const xMin = Math.min(...xs), xMax = Math.max(...xs);
-    const yMin = Math.min(...ys), yMax = Math.max(...ys);
-    const [vMin, vMax] = waferRange(basis, vi);
+    const basis = shared && shared.allRows ? waferDies(shared.allRows, xi, yi, vi) : dies;
+    const [xMin, xMax] = minMax(basis.map((r) => r[0]));
+    const [yMin, yMax] = minMax(basis.map((r) => r[1]));
+    const [vMin, vMax] = waferRange(basis);
 
     // ファセット時のカラースケールは格子の外側に本体が描く(renderLegend)。
     // ここで1枚だけ右余白を広げるとマップの大きさと位置が揃わなくなる
@@ -1927,9 +2066,9 @@ kohaku.registerChartType({
 
     // ダイ描画(Y軸は上向きが正になるよう反転)
     for (const r of dies) {
-      const cx = ox + (r[xi] - xMin) * cell;
-      const cy = oy + (yMax - r[yi]) * cell;
-      ctx.fillStyle = waferColor(r[vi], vMin, vMax);
+      const cx = ox + (r[0] - xMin) * cell;
+      const cy = oy + (yMax - r[1]) * cell;
+      ctx.fillStyle = waferColor(r[2], vMin, vMax);
       ctx.fillRect(cx + 0.5, cy + 0.5, cell - 1, cell - 1);
     }
     // ウェハー外周円
@@ -1953,10 +2092,16 @@ kohaku.registerChartType({
   // (本体が最上段の右端パネルの右隣に配置する)
   legendWidth: 76,
   renderLegend(ctx, w, h, spec, result, H) {
-    const vi = result.columns.indexOf("v");
-    const rows = result.rows.filter((r) => r[vi] !== null);
+    // 本体(render)と同じ絞り込みを通す。片方だけ条件が違うと、
+    // カラースケールの目盛りとマップの色が食い違う
+    const rows = waferDies(
+      result.rows,
+      result.columns.indexOf("x"),
+      result.columns.indexOf("y"),
+      result.columns.indexOf("v")
+    );
     if (!rows.length) return;
-    const [vMin, vMax] = waferRange(rows, vi);
+    const [vMin, vMax] = waferRange(rows);
     // マップ本体(render の m.t / m.b)と同じ縦位置に揃える
     drawWaferScale(ctx, 12, 22, h - 60, vMin, vMax, H);
   },
@@ -1970,7 +2115,9 @@ kohaku.registerChartType({
 kohaku.registerChartType({
   type: "spc",
   label: "SPC管理図",
-  form: { x: "時間/順序列", value: "測定値", agg: true, yrange: true, facet: true },
+  // 集計は avg/sum のみ実装している(サブグループの代表値)。
+  // 実装していないものを選べると、選んだ内容と管理限界が食い違う
+  form: { x: "時間/順序列", value: "測定値", agg: ["avg", "sum"], yrange: true, facet: true },
   async fetch(spec, base) {
     if (!spec.value) throw new Error("測定値の列を指定してください");
     const req = {
@@ -2290,6 +2437,7 @@ async function runToolDiff() {
     //   (1) 全体の検定が有意でも、その群が有意なペアに入っているとは限らない
     //   (2) 測定値の良し悪しの向きはデータから決まらない
     //       (欠陥数のように低い方が良いこともある)
+    // r.pairs は全体の検定が有意なときだけ返る(サーバー側でゲート済み)
     const diffLabels = new Set();
     if (Array.isArray(r.pairs)) {
       for (const p of r.pairs) {
@@ -2323,6 +2471,8 @@ async function runToolDiff() {
             .join(" / ") +
           "</div>"
         : '<div class="hint">Holm補正後に有意なペアはありません</div>';
+    } else if (r.pairs_note) {
+      html += `<div class="hint">${esc(r.pairs_note)}</div>`;
     }
     if (r.dropped_small.length) {
       html += `<div class="hint">検定から除外(3点未満): ${esc(r.dropped_small.join(", "))}</div>`;
@@ -2457,7 +2607,7 @@ async function anLoadColumns() {
     } else {
       const sql = stripSemi($("an-sql").value);
       if (sql) {
-        const r = await api("/api/query", { sql: `SELECT * FROM (${sql}) LIMIT 100`, limit: 100 });
+        const r = await api("/api/query", { sql: `SELECT * FROM (${sql}) LIMIT 100`, limit: 100, record: false });
         anColumns = r.columns.map((name, i) => {
           let numeric = false;
           for (const row of r.rows) {
@@ -3557,7 +3707,7 @@ async function chartSourceCols(spec) {
   const key = "sql:" + spec.id;
   if (dashSourceCols.has(key)) return dashSourceCols.get(key);
   try {
-    const r = await api("/api/query", { sql: `SELECT * FROM (${chartBaseSql(spec)}) LIMIT 1`, limit: 1 });
+    const r = await api("/api/query", { sql: `SELECT * FROM (${chartBaseSql(spec)}) LIMIT 1`, limit: 1, record: false });
     dashSourceCols.set(key, r.columns);
     return r.columns;
   } catch (e) {
@@ -3712,7 +3862,12 @@ function opaquePngDataUrl(canvas) {
 /** チャートタブ: プレビュー中のチャートをタイトル付きPNGで保存 */
 function exportChartPng() {
   const canvas = $("chart-canvas");
-  const spec = chartSpecFromForm();
+  // 画像はプレビュー時のもの。spec もそのときのものを使う
+  const spec = lastPreviewSpec;
+  if (!spec) {
+    setStatus("先にプレビューを実行してください", true);
+    return;
+  }
   if (spec.chart_type === "table") {
     setStatus("テーブルはPNGに対応していません(ダッシュボードのHTMLレポートを使ってください)", true);
     return;
