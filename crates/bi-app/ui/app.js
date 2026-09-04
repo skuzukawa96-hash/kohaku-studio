@@ -1621,9 +1621,11 @@ function drawChartArea(ctx, w, h, spec, result, title, shared) {
           if (!counts[b]) continue;
           const bx = m.l + (b / nb) * pw;
           const bw = pw / nb - 1;
-          // 棒は軸の下端から度数の高さまで(手動レンジで下端が0でなくても崩れない)
+          // 棒は「0から度数まで」。軸の下端まで塗ると、手動レンジの下端が
+          // 負のとき(y_min=-10 など)すべての棒がその分だけ水増しされる。
+          // 0がレンジ外なら clipPlot が切り取る(棒グラフ側と同じ考え方)
           const top = hpy(counts[b]);
-          ctx.fillRect(bx, top, Math.max(1, bw), m.t + ph - top);
+          ctx.fillRect(bx, top, Math.max(1, bw), hpy(0) - top);
         }
       });
       ctx.globalAlpha = 1;
@@ -1887,10 +1889,34 @@ function drawWaferScale(ctx, sx, sy, sh, vMin, vMax, H) {
 }
 
 /** ウェハーマップの値域(ファセット時は全ウェハー共通) */
-function waferRange(rows, vi) {
-  const vs = rows.map((r) => r[vi]).filter((v) => v !== null);
-  let vMin = Math.min(...vs);
-  let vMax = Math.max(...vs);
+/** 配列の最小・最大。Math.min(...arr) は要素が数万を超えると
+ *  引数の上限に当たって落ちるため、ウェハーマップのように点数が多いものは
+ *  こちらを使う(ダイは最大10万点まで返る)。 */
+function minMax(arr) {
+  let mn = Infinity, mx = -Infinity;
+  for (const v of arr) {
+    if (v < mn) mn = v;
+    if (v > mx) mx = v;
+  }
+  return [mn, mx];
+}
+
+/** ウェハーマップの行を [x, y, v] の有限な数値だけにして返す。
+ *  列の選択肢には非数値の列も並ぶので、X/Yに文字列が選ばれることがある。
+ *  null チェックだけだと Math.min が NaN になり、「データがありません」にも
+ *  落ちずに真っ白なまま何も出ない。 */
+function waferDies(rows, xi, yi, vi) {
+  const num = (z) => (typeof z === "number" ? z : z === null || z === "" ? NaN : Number(z));
+  const out = [];
+  for (const r of rows) {
+    const x = num(r[xi]), y = num(r[yi]), v = num(r[vi]);
+    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(v)) out.push([x, y, v]);
+  }
+  return out;
+}
+
+function waferRange(rows) {
+  let [vMin, vMax] = minMax(rows.map((r) => r[2]));
   if (vMin === vMax) {
     vMin -= 1;
     vMax += 1;
@@ -1922,8 +1948,7 @@ kohaku.registerChartType({
     const xi = result.columns.indexOf("x");
     const yi = result.columns.indexOf("y");
     const vi = result.columns.indexOf("v");
-    const valid = (rows) => rows.filter((r) => r[xi] !== null && r[yi] !== null && r[vi] !== null);
-    const dies = valid(result.rows);
+    const dies = waferDies(result.rows, xi, yi, vi);
     if (!dies.length) {
       ctx.fillStyle = H.colors.text;
       ctx.fillText("データがありません", 16, 24);
@@ -1931,12 +1956,10 @@ kohaku.registerChartType({
     }
     // ファセット時は座標範囲とカラースケールを全ウェハーで共有する
     // (揃えないと同じ値が別の色になり、ウェハー同士を比較できない)
-    const basis = shared && shared.allRows ? valid(shared.allRows) : dies;
-    const xs = basis.map((r) => r[xi]);
-    const ys = basis.map((r) => r[yi]);
-    const xMin = Math.min(...xs), xMax = Math.max(...xs);
-    const yMin = Math.min(...ys), yMax = Math.max(...ys);
-    const [vMin, vMax] = waferRange(basis, vi);
+    const basis = shared && shared.allRows ? waferDies(shared.allRows, xi, yi, vi) : dies;
+    const [xMin, xMax] = minMax(basis.map((r) => r[0]));
+    const [yMin, yMax] = minMax(basis.map((r) => r[1]));
+    const [vMin, vMax] = waferRange(basis);
 
     // ファセット時のカラースケールは格子の外側に本体が描く(renderLegend)。
     // ここで1枚だけ右余白を広げるとマップの大きさと位置が揃わなくなる
@@ -1952,9 +1975,9 @@ kohaku.registerChartType({
 
     // ダイ描画(Y軸は上向きが正になるよう反転)
     for (const r of dies) {
-      const cx = ox + (r[xi] - xMin) * cell;
-      const cy = oy + (yMax - r[yi]) * cell;
-      ctx.fillStyle = waferColor(r[vi], vMin, vMax);
+      const cx = ox + (r[0] - xMin) * cell;
+      const cy = oy + (yMax - r[1]) * cell;
+      ctx.fillStyle = waferColor(r[2], vMin, vMax);
       ctx.fillRect(cx + 0.5, cy + 0.5, cell - 1, cell - 1);
     }
     // ウェハー外周円
@@ -1978,10 +2001,16 @@ kohaku.registerChartType({
   // (本体が最上段の右端パネルの右隣に配置する)
   legendWidth: 76,
   renderLegend(ctx, w, h, spec, result, H) {
-    const vi = result.columns.indexOf("v");
-    const rows = result.rows.filter((r) => r[vi] !== null);
+    // 本体(render)と同じ絞り込みを通す。片方だけ条件が違うと、
+    // カラースケールの目盛りとマップの色が食い違う
+    const rows = waferDies(
+      result.rows,
+      result.columns.indexOf("x"),
+      result.columns.indexOf("y"),
+      result.columns.indexOf("v")
+    );
     if (!rows.length) return;
-    const [vMin, vMax] = waferRange(rows, vi);
+    const [vMin, vMax] = waferRange(rows);
     // マップ本体(render の m.t / m.b)と同じ縦位置に揃える
     drawWaferScale(ctx, 12, 22, h - 60, vMin, vMax, H);
   },
@@ -2315,6 +2344,7 @@ async function runToolDiff() {
     //   (1) 全体の検定が有意でも、その群が有意なペアに入っているとは限らない
     //   (2) 測定値の良し悪しの向きはデータから決まらない
     //       (欠陥数のように低い方が良いこともある)
+    // r.pairs は全体の検定が有意なときだけ返る(サーバー側でゲート済み)
     const diffLabels = new Set();
     if (Array.isArray(r.pairs)) {
       for (const p of r.pairs) {
@@ -2348,6 +2378,8 @@ async function runToolDiff() {
             .join(" / ") +
           "</div>"
         : '<div class="hint">Holm補正後に有意なペアはありません</div>';
+    } else if (r.pairs_note) {
+      html += `<div class="hint">${esc(r.pairs_note)}</div>`;
     }
     if (r.dropped_small.length) {
       html += `<div class="hint">検定から除外(3点未満): ${esc(r.dropped_small.join(", "))}</div>`;
