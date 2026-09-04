@@ -523,11 +523,16 @@ fn api_query(state: &mut AppState, req: &Json) -> BiResult<Json> {
         .unwrap_or(5000)
         .min(100_000) as usize;
     let r = state.engine.query(&sql, limit)?;
-    // 実行履歴(最新20件)
-    let trimmed = sql.trim().to_string();
-    state.queries.retain(|q| q != &trimmed);
-    state.queries.insert(0, trimmed);
-    state.queries.truncate(20);
+    // 実行履歴(最新20件)。UIが列名や型を調べるためだけに投げる内部クエリは
+    // record: false で除外する。記録すると、インポートやプロジェクト保存の
+    // たびに実装の詳細(SELECT * FROM (...) LIMIT 1)が利用者の履歴に混ざり、
+    // そのままプロジェクトへ保存されてしまう
+    if req.get("record").and_then(|x| x.as_bool()).unwrap_or(true) {
+        let trimmed = sql.trim().to_string();
+        state.queries.retain(|q| q != &trimmed);
+        state.queries.insert(0, trimmed);
+        state.queries.truncate(20);
+    }
     Ok(json!({
         "columns": r.columns,
         "rows": r.rows,
@@ -614,4 +619,36 @@ fn api_project_load(state: &mut AppState, req: &Json) -> BiResult<Json> {
         "errors": errors,
         "cached_datasets": cached_count,
     }))
+}
+
+// ---------- テスト ----------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// UIが列名を調べるためだけに投げる内部クエリ(record: false)は
+    /// 実行履歴に残さない。残すと、インポートやプロジェクト保存のたびに
+    /// 実装の詳細が利用者の履歴へ入り、プロジェクトにも保存されてしまう
+    #[test]
+    fn test_query_history_skips_internal_probes() {
+        let mut st = AppState::new(false, false).unwrap();
+        api_query(&mut st, &json!({"sql": "SELECT 1 AS a"})).unwrap();
+        api_query(
+            &mut st,
+            &json!({"sql": "SELECT * FROM (SELECT 2 AS b) LIMIT 1", "record": false}),
+        )
+        .unwrap();
+        api_query(&mut st, &json!({"sql": "SELECT 3 AS c"})).unwrap();
+
+        assert_eq!(st.queries, vec!["SELECT 3 AS c", "SELECT 1 AS a"]);
+    }
+
+    /// record を省いたときは従来どおり記録する(既存の呼び出しを壊さない)
+    #[test]
+    fn test_query_history_records_by_default() {
+        let mut st = AppState::new(false, false).unwrap();
+        api_query(&mut st, &json!({"sql": "SELECT 1 AS a"})).unwrap();
+        assert_eq!(st.queries.len(), 1);
+    }
 }
