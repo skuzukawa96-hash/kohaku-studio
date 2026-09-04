@@ -2281,6 +2281,7 @@ async function runToolDiff() {
     //   (1) 全体の検定が有意でも、その群が有意なペアに入っているとは限らない
     //   (2) 測定値の良し悪しの向きはデータから決まらない
     //       (欠陥数のように低い方が良いこともある)
+    // r.pairs は全体の検定が有意なときだけ返る(サーバー側でゲート済み)
     const diffLabels = new Set();
     if (Array.isArray(r.pairs)) {
       for (const p of r.pairs) {
@@ -2314,6 +2315,8 @@ async function runToolDiff() {
             .join(" / ") +
           "</div>"
         : '<div class="hint">Holm補正後に有意なペアはありません</div>';
+    } else if (r.pairs_note) {
+      html += `<div class="hint">${esc(r.pairs_note)}</div>`;
     }
     if (r.dropped_small.length) {
       html += `<div class="hint">検定から除外(3点未満): ${esc(r.dropped_small.join(", "))}</div>`;
