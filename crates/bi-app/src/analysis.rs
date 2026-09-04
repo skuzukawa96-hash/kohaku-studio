@@ -223,8 +223,12 @@ pub fn api_profile(state: &mut AppState, req: &Json) -> BiResult<Json> {
     }
     // 同名の列があると列名で取り出せない(JOINで両側に同じ列名があるSQL等)。
     // その場合だけ従来どおり全列を一度に読む
-    let mut seen: HashSet<&str> = HashSet::new();
-    let by_column = names.iter().all(|n| seen.insert(n.as_str()));
+    // SQLite はクオートした識別子も ASCII の大文字小文字を区別しないため、
+    // 大小違いだけの別名(SELECT a AS "P", b AS "p")も重複として扱う。
+    // 区別しないまま列ごとに読むと、どちらの SELECT も同じ列を指してしまい、
+    // 2列目の統計と相関が黙って間違う
+    let mut seen: HashSet<String> = HashSet::new();
+    let by_column = names.iter().all(|n| seen.insert(n.to_ascii_lowercase()));
 
     let mut columns_out = Vec::with_capacity(names.len());
     let mut numeric_cols: Vec<(String, Vec<f64>)> = Vec::new();
@@ -415,6 +419,12 @@ pub fn api_timeseries(state: &mut AppState, req: &Json) -> BiResult<Json> {
             Value::Text(t) => (None, t.clone()),
             Value::Null => unreachable!(),
         };
+        // 時間列が NaN/Inf の行も落とす。数値順の並べ替えは
+        // partial_cmp が None を返して順序が定まらず、さらに "NaN" という
+        // 時点が結果に混ざって分解結果まで狂う
+        if num.is_some_and(|v| !v.is_finite()) {
+            continue;
+        }
         if num.is_none() {
             all_numeric = false;
         }
@@ -731,7 +741,11 @@ pub fn api_lottrace(state: &mut AppState, req: &Json) -> BiResult<Json> {
         .filter(|d| {
             d.schema
                 .as_ref()
-                .map(|sc| sc.columns.iter().any(|c| c.name == col))
+                // SQLite はクオートした識別子も ASCII の大文字小文字を
+                // 区別しないので、生成するSQL自体は LOT_ID/lot_id のどちらでも
+                // 通る。ここだけ厳密比較にすると、実際には検索できるデータセットを
+                // 黙って対象外にしてしまう
+                .map(|sc| sc.columns.iter().any(|c| c.name.eq_ignore_ascii_case(&col)))
                 .unwrap_or(false)
         })
         .map(|d| d.name.clone())
@@ -1794,6 +1808,31 @@ mod tests {
         assert_eq!(r["top_pairs"][0]["r"], 1.0);
     }
 
+    /// 大小違いだけの別名も重複として扱う。SQLite はクオートした識別子でも
+    /// ASCII の大文字小文字を区別しないため、列ごとに読むとどちらも
+    /// 同じ列を指してしまい、2列目の統計が黙って1列目のコピーになる
+    #[test]
+    fn test_profile_case_only_duplicate_columns() {
+        let rows: Vec<Vec<Value>> = (1..=8)
+            .map(|i| vec![Value::Int(i), Value::Int(i * 100)])
+            .collect();
+        let mut st = state_with(
+            "cdup",
+            &[("a", DataType::Int64), ("b", DataType::Int64)],
+            rows,
+        );
+        let r = api_profile(
+            &mut st,
+            &json!({"source": {"kind": "sql", "sql": "SELECT a AS \"P\", b AS \"p\" FROM \"cdup\""}}),
+        )
+        .unwrap();
+        let cols = r["columns"].as_array().unwrap();
+        assert_eq!(cols.len(), 2);
+        // 2列目は b(100..800)。1列目のコピーになっていないこと
+        assert_eq!(cols[0]["stats"]["max"], 8.0);
+        assert_eq!(cols[1]["stats"]["max"], 800.0);
+    }
+
     /// 同名の列があるSQL(JOINで両側に同じ列名がある等)は列名で取り出せないため
     /// 全列読みに切り替わる。どちらの経路でも同じ結果になることを確認する
     #[test]
@@ -2094,6 +2133,38 @@ mod tests {
         assert_eq!(gs[0]["result"]["n_used"], 12);
     }
 
+    /// 時間列が NaN の行は落とす。数値順の並べ替えが定まらないうえ、
+    /// "NaN" という時点が分解結果に混ざってしまう
+    #[test]
+    fn test_timeseries_drops_nonfinite_time() {
+        let mut rows: Vec<Vec<Value>> = (1..=12)
+            .map(|i| vec![Value::Float(i as f64), Value::Float(10.0 + (i % 4) as f64)])
+            .collect();
+        rows.push(vec![Value::Float(f64::NAN), Value::Float(99.0)]);
+        rows.push(vec![Value::Float(f64::INFINITY), Value::Float(98.0)]);
+        let mut st = state_with(
+            "tsn",
+            &[("t", DataType::Float64), ("v", DataType::Float64)],
+            rows,
+        );
+        let r = api_timeseries(
+            &mut st,
+            &json!({"source": ds("tsn"), "x": "t", "y": "v", "period": 4}),
+        )
+        .unwrap();
+        let labels: Vec<&str> = r["labels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap())
+            .collect();
+        assert_eq!(labels.len(), 12, "{labels:?}");
+        assert!(!labels
+            .iter()
+            .any(|l| l.contains("NaN") || l.contains("inf")));
+        assert_eq!(r["dropped"], 2);
+    }
+
     // ---------- 装置差分析API ----------
 
     /// 平均が段階的に異なる3群 + 点数不足の1群。検定・事後比較・除外の統合検証
@@ -2350,6 +2421,35 @@ mod tests {
     }
 
     // ---------- ロットトレースAPI ----------
+
+    /// ID列の綴りが大小で違うデータセットも検索対象にする。
+    /// SQLite は識別子の大小を区別しないので、生成するSQLはどちらでも通る
+    #[test]
+    fn test_lottrace_matches_case_variant_columns() {
+        let mut st = state_with(
+            "lower",
+            &[("lot_id", DataType::Utf8), ("v", DataType::Float64)],
+            vec![vec![Value::Text("L001".into()), Value::Float(1.0)]],
+        );
+        register(
+            &mut st,
+            "upper",
+            &[("LOT_ID", DataType::Utf8), ("w", DataType::Float64)],
+            vec![vec![Value::Text("L001".into()), Value::Float(2.0)]],
+        );
+        let r = api_lottrace(&mut st, &json!({"column": "lot_id", "value": "L001"})).unwrap();
+        let hits: Vec<&str> = r["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["dataset"].as_str().unwrap())
+            .collect();
+        assert!(
+            hits.contains(&"lower") && hits.contains(&"upper"),
+            "{hits:?}"
+        );
+        assert_eq!(r["searched_datasets"], 2);
+    }
 
     #[test]
     fn test_lottrace_cross_dataset() {
